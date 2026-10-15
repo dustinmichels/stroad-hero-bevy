@@ -1,0 +1,15 @@
+[tools]
+# Bevy's MSRV is "the latest stable Rust", so track latest stable rather than pinning.
+rust = "latest"
+
+[tasks.fmt]
+description = "Format Rust code across the workspace"
+run = "cargo fmt --all"
+
+[tasks.dev]
+description = "Run with Bevy dynamically linked (fast iterative rebuilds)"
+run = "cargo run --features dynamic_linking"
+
+[tasks.build]
+description = "Build with Bevy dynamically linked (shares artifacts with `dev`)"
+run = "cargo build --features dynamic_linking"

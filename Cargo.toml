@@ -1,3 +1,7 @@
+# Build configuration follows the Bevy setup guide:
+# https://bevy.org/learn/quick-start/getting-started/setup/
+# Deviations from the guide are marked "(addition)". See README "Build configuration".
+
 [package]
 name = "stroad-hero"
 version = "0.1.0"
@@ -5,3 +9,45 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.20.0"
+# Compile out trace-level logs from Bevy's dependencies (runtime perf), and keep only
+# warn/error in release builds. Wildcard version per the guide: `log` is already pulled
+# in by Bevy, so this only selects features; Cargo.lock pins the actual version.
+log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
+
+[features]
+# (addition) Project-level alias for `bevy/dynamic_linking` so the flag is a short
+# `--features dynamic_linking` (used by `mise run dev`). Dev only: dynamically linked
+# binaries need the Bevy dylib next to them, so never ship a build with this enabled.
+dynamic_linking = ["bevy/dynamic_linking"]
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+# (addition) Skip debuginfo for deps: cuts rustc memory sharply on large Bevy crates
+# (dev machine has 8 GB RAM). Cost: no source line info for Bevy frames in a debugger;
+# our own crate keeps full debuginfo.
+debug = false
+
+# Enable more optimization in the release profile at the cost of compile time.
+[profile.release]
+# Compile the entire crate as one unit.
+# Slows compile times, marginal improvements.
+codegen-units = 1
+# Do a second optimization pass over the entire program, including dependencies.
+# Slows compile times, marginal improvements.
+lto = "thin"
+
+# Optimize for size in the wasm-release profile to reduce load times and bandwidth usage on web.
+# Use with `--profile wasm-release` instead of `--release` (see docs/web-plan.md).
+[profile.wasm-release]
+# Default to release profile values.
+inherits = "release"
+# Optimize with size in mind (also try "z", sometimes it is better).
+# Slightly slows compile times, great improvements to file size and runtime performance.
+opt-level = "s"
+# Strip all debugging information from the binary to slightly reduce file size.
+strip = "debuginfo"

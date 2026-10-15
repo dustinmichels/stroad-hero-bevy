@@ -1,0 +1,21 @@
+# Cargo config; see README "Build configuration".
+
+# (addition) Cap parallel rustc jobs (default = CPU count, 8 here). On an 8 GB RAM machine,
+# several large Bevy crates compiling at once push into swap, which is slower than
+# compiling fewer at a time. Override per-invocation with `cargo build -j N` or
+# CARGO_BUILD_JOBS=N on machines with more memory.
+[build]
+jobs = 6
+
+# Fast linkers, from the Bevy setup guide ("Alternative Linkers").
+# macOS: nothing to configure; the default linker (ld-prime) is already faster than LLD.
+
+# Linux: requires `clang` and `lld` packages to be installed.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# Windows: requires `cargo install -f cargo-binutils` and
+# `rustup component add llvm-tools-preview`.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
