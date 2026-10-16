@@ -147,6 +147,30 @@ pub fn check_circle_aabb_collision(
     distance_sq <= circle_radius * circle_radius
 }
 
+/// Tests 2D collision between a circle (center and radius) and an oriented bounding box (center, half-extents, and rotation angle).
+///
+/// Transforms the circle center into the car's local coordinate frame and delegates to the AABB test.
+pub fn check_circle_obb_collision(
+    circle_center: Vec2,
+    circle_radius: f32,
+    box_center: Vec2,
+    box_half_extents: Vec2,
+    box_rotation: f32,
+) -> bool {
+    let diff = circle_center - box_center;
+    let (sin_phi, cos_phi) = (-box_rotation).sin_cos();
+    let local_circle_center = Vec2::new(
+        diff.x * cos_phi - diff.y * sin_phi,
+        diff.x * sin_phi + diff.y * cos_phi,
+    );
+    check_circle_aabb_collision(
+        local_circle_center,
+        circle_radius,
+        Vec2::ZERO,
+        box_half_extents,
+    )
+}
+
 /// System to detect collisions between active player and any car entity.
 ///
 /// When an overlap is detected:
@@ -179,8 +203,9 @@ pub fn collision_detection(
 
         for (car_entity, car, car_transform) in &car_query {
             let car_pos = car_transform.translation.truncate();
+            let angle = 2.0 * car_transform.rotation.z.atan2(car_transform.rotation.w);
 
-            if check_circle_aabb_collision(player_pos, player.radius, car_pos, car.half_extents()) {
+            if check_circle_obb_collision(player_pos, player.radius, car_pos, car.half_extents(), angle) {
                 // 1. Increment SPD
                 let current_spd = if let Some(spd_res) = spd.as_deref_mut() {
                     spd_res.increment();
@@ -404,6 +429,33 @@ mod tests {
             box_pos,
             box_half_extents
         ));
+    }
+
+    #[test]
+    fn test_circle_obb_collision_rotated() {
+        let box_pos = Vec2::new(0.0, 0.0);
+        let box_half_extents = Vec2::new(24.0, 13.0);
+        let radius = 5.0;
+
+        // Unrotated: at (35, 0), distance is 11 > 5 (no collision)
+        assert!(!check_circle_obb_collision(Vec2::new(35.0, 0.0), radius, box_pos, box_half_extents, 0.0));
+
+        // Rotated 90 degrees (FRAC_PI_2): long axis is along Y (+-24), short axis along X (+-13)
+        // At (0, 27), distance from rotated top edge (y=24) is 3 <= 5 -> collision!
+        assert!(check_circle_obb_collision(Vec2::new(0.0, 27.0), radius, box_pos, box_half_extents, std::f32::consts::FRAC_PI_2));
+
+        // At (20, 0), distance from rotated right edge (x=13) is 7 > 5 -> no collision!
+        assert!(!check_circle_obb_collision(Vec2::new(20.0, 0.0), radius, box_pos, box_half_extents, std::f32::consts::FRAC_PI_2));
+
+        // Rotated 45 degrees (FRAC_PI_4):
+        // At (23.0, -12.0), AABB check would say collision because it's inside unrotated [+-24, +-13],
+        // but rotated into box local space it is at (7.78, -24.75), distance to edge (y=-13) is 11.75 > 5 -> miss!
+        assert!(!check_circle_obb_collision(Vec2::new(23.0, -12.0), radius, box_pos, box_half_extents, std::f32::consts::FRAC_PI_4));
+
+        // Point along 45 degree heading at distance 20: (20 * cos(45), 20 * sin(45)) -> local is (20, 0) inside box -> hit!
+        let angle_45 = std::f32::consts::FRAC_PI_4;
+        let hit_45 = Vec2::new(20.0 * angle_45.cos(), 20.0 * angle_45.sin());
+        assert!(check_circle_obb_collision(hit_45, radius, box_pos, box_half_extents, angle_45));
     }
 
     // ==========================================
@@ -984,5 +1036,52 @@ mod tests {
         // Verify indices
         let indices = mesh1.indices().unwrap();
         assert_eq!(indices.len(), 24 * 3);
+    }
+
+    #[test]
+    fn test_collision_on_curved_road() {
+        let mut app = setup_collision_test_app();
+
+        // Place car along the curve at 45 degrees
+        let angle = std::f32::consts::FRAC_PI_4;
+        let r = CURVE_RADIUS + LANE_WIDTH / 2.0;
+        let curve_car_pos = Vec2::new(
+            CURVE_START_X + r * angle.sin(),
+            CURVE_CENTER.y - r * angle.cos(),
+        );
+
+        let car_entity = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(curve_car_pos.x, curve_car_pos.y, Z_CAR)
+                    .with_rotation(Quat::from_rotation_z(angle)),
+                Car::new(CAR_SPEED, Vec2::new(angle.cos(), angle.sin()), CAR_LENGTH, CAR_WIDTH),
+            ))
+            .id();
+
+        // Place player directly on the curve at the car position
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                Player::default(),
+                Transform::from_xyz(curve_car_pos.x, curve_car_pos.y, Z_PLAYER),
+            ))
+            .id();
+
+        app.update();
+
+        // Collision should be detected: player reset to spawn, SPD incremented, splat spawned
+        let p_trans = app.world().get::<Transform>(player_entity).unwrap();
+        assert_eq!(p_trans.translation.truncate(), PLAYER_SPAWN_POS);
+
+        let spd = app.world().resource::<Spd>();
+        assert_eq!(spd.0, 1);
+
+        let mut splat_query = app.world_mut().query::<(&BloodSplat, &Transform)>();
+        let splats: Vec<(&BloodSplat, &Transform)> = splat_query.iter(app.world()).collect();
+        assert_eq!(splats.len(), 1);
+        assert_eq!(splats[0].1.translation.truncate(), curve_car_pos);
+
+        let _ = car_entity;
     }
 }

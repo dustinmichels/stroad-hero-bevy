@@ -47,6 +47,7 @@ This document charts the roadmap from the initial 2D intersection prototype (`pl
   3. **Visual Presentation Options**:
      - _Immediate (2D Sprites / Pixel Art)_: Fast iteration with `Camera2d` and `Sprite`, zero 3D modeling overhead.
      - _Future Expansion (3D Presentation)_: Switch camera to `Camera3d` (isometric or perspective) and bind low-poly meshes or billboarded 2.5D sprites, leaving simulation logic 100% untouched.
+     - _Chosen Direction_: isometric pixel art (`pics/ideas/idea.jpg`, refining `pics/ideas/01_isometric_pixel_art.png`). Asset pipeline, camera setup, and how the view binds to the sim are in `docs/isometric-view.md`.
 - **Web Budget**: Target is < 15 MB uncompressed wasm (ideally < 10 MB per `docs/web-plan.md`). A 2D simulation layer easily accommodates either visual target while staying within web constraints.
 
 ---

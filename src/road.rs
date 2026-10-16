@@ -13,6 +13,7 @@ pub const COLOR_GRID_LINE: Color = Color::srgba(0.20, 0.22, 0.28, 0.40);
 pub enum RoadOrientation {
     Horizontal,
     Vertical,
+    Curved,
 }
 
 /// Tag component for a road entity
@@ -65,6 +66,9 @@ pub struct RoadGeometry {
     pub world_width: f32,
     pub world_height: f32,
     pub intersection_bounds: Rect,
+    pub curve_start_x: f32,
+    pub curve_center: Vec2,
+    pub curve_radius: f32,
 }
 
 impl Default for RoadGeometry {
@@ -73,12 +77,15 @@ impl Default for RoadGeometry {
         Self {
             road_width: ROAD_WIDTH,
             lane_width: LANE_WIDTH,
-            world_width: WINDOW_WIDTH,
-            world_height: WINDOW_HEIGHT,
+            world_width: WORLD_WIDTH,
+            world_height: WORLD_HEIGHT,
             intersection_bounds: Rect::from_corners(
                 Vec2::new(-half_road, -half_road),
                 Vec2::new(half_road, half_road),
             ),
+            curve_start_x: CURVE_START_X,
+            curve_center: CURVE_CENTER,
+            curve_radius: CURVE_RADIUS,
         }
     }
 }
@@ -95,6 +102,9 @@ impl RoadGeometry {
                 Vec2::new(-half_road, -half_road),
                 Vec2::new(half_road, half_road),
             ),
+            curve_start_x: CURVE_START_X,
+            curve_center: CURVE_CENTER,
+            curve_radius: CURVE_RADIUS,
         }
     }
 
@@ -103,11 +113,11 @@ impl RoadGeometry {
         self.intersection_bounds.contains(point)
     }
 
-    /// Bounds of the horizontal road strip
+    /// Bounds of the straight horizontal road strip (west of the curve)
     pub fn horizontal_bounds(&self) -> Rect {
         let half_road = self.road_width / 2.0;
         let half_w = self.world_width / 2.0;
-        Rect::from_corners(Vec2::new(-half_w, -half_road), Vec2::new(half_w, half_road))
+        Rect::from_corners(Vec2::new(-half_w, -half_road), Vec2::new(self.curve_start_x, half_road))
     }
 
     /// Bounds of the vertical road strip
@@ -117,9 +127,21 @@ impl RoadGeometry {
         Rect::from_corners(Vec2::new(-half_road, -half_h), Vec2::new(half_road, half_h))
     }
 
+    /// Check if a 2D coordinate is on the curved road section
+    pub fn is_on_curved_road(&self, point: Vec2) -> bool {
+        let half_road = self.road_width / 2.0;
+        if point.x < self.curve_start_x - 1.0 || point.y > self.curve_center.y + 1.0 {
+            return false;
+        }
+        let dist = point.distance(self.curve_center);
+        dist >= (self.curve_radius - half_road) && dist <= (self.curve_radius + half_road)
+    }
+
     /// Check if a 2D coordinate is anywhere on the paved road network
     pub fn is_on_road(&self, point: Vec2) -> bool {
-        self.horizontal_bounds().contains(point) || self.vertical_bounds().contains(point)
+        self.horizontal_bounds().contains(point)
+            || self.vertical_bounds().contains(point)
+            || self.is_on_curved_road(point)
     }
 
     /// Center position for horizontal Eastbound lane (lower lane, y < 0)
@@ -141,6 +163,26 @@ impl RoadGeometry {
     pub fn north_lane_x(&self) -> f32 {
         self.lane_width / 2.0
     }
+
+    /// Radius of the Eastbound outer lane on the curve
+    pub fn curve_east_lane_radius(&self) -> f32 {
+        self.curve_radius + self.lane_width / 2.0
+    }
+
+    /// Radius of the Westbound inner lane on the curve
+    pub fn curve_west_lane_radius(&self) -> f32 {
+        self.curve_radius - self.lane_width / 2.0
+    }
+
+    /// X coordinate where the curved Westbound lane enters/exits at the northern edge
+    pub fn curve_west_lane_x(&self) -> f32 {
+        self.curve_center.x + self.curve_west_lane_radius()
+    }
+
+    /// X coordinate where the curved Eastbound lane enters/exits at the northern edge
+    pub fn curve_east_lane_x(&self) -> f32 {
+        self.curve_center.x + self.curve_east_lane_radius()
+    }
 }
 
 /// Bevy plugin configuring road geometry and static road/grid entity spawning
@@ -155,8 +197,8 @@ impl Plugin for RoadPlugin {
 
 /// Spawn static road asphalt rectangles and line markings at Z_ROAD layer (beneath cars and player)
 pub fn setup_roads(mut commands: Commands) {
-    let half_w = HALF_WINDOW_WIDTH;
-    let half_h = HALF_WINDOW_HEIGHT;
+    let half_w = HALF_WORLD_WIDTH;
+    let half_h = HALF_WORLD_HEIGHT;
     let half_road = ROAD_WIDTH / 2.0;
     let border_thickness = 3.0;
     let centerline_thickness = 3.0;
@@ -169,7 +211,7 @@ pub fn setup_roads(mut commands: Commands) {
         commands.spawn((
             Sprite::from_color(
                 COLOR_GRID_LINE,
-                Vec2::new(grid_line_thickness, WINDOW_HEIGHT),
+                Vec2::new(grid_line_thickness, WORLD_HEIGHT),
             ),
             Transform::from_xyz(x, 0.0, z_grid),
             GridLine,
@@ -182,79 +224,87 @@ pub fn setup_roads(mut commands: Commands) {
         commands.spawn((
             Sprite::from_color(
                 COLOR_GRID_LINE,
-                Vec2::new(WINDOW_WIDTH, grid_line_thickness),
+                Vec2::new(WORLD_WIDTH, grid_line_thickness),
             ),
             Transform::from_xyz(0.0, y, z_grid),
             GridLine,
         ));
         y += GRID_STEP_SIZE;
     }
-    // Horizontal Road Asphalt (z = Z_ROAD)
+
+    // Straight Horizontal Road Asphalt (from -half_w to CURVE_START_X)
+    let h_straight_len = half_w + CURVE_START_X;
+    let h_straight_center_x = (-half_w + CURVE_START_X) / 2.0;
     commands.spawn((
-        Sprite::from_color(COLOR_ROAD_ASPHALT, Vec2::new(WINDOW_WIDTH, ROAD_WIDTH)),
-        Transform::from_xyz(0.0, 0.0, Z_ROAD),
+        Sprite::from_color(COLOR_ROAD_ASPHALT, Vec2::new(h_straight_len, ROAD_WIDTH)),
+        Transform::from_xyz(h_straight_center_x, 0.0, Z_ROAD),
         Road {
             orientation: RoadOrientation::Horizontal,
             width: ROAD_WIDTH,
-            length: WINDOW_WIDTH,
+            length: h_straight_len,
         },
     ));
 
     // Vertical Road Asphalt (z = Z_ROAD)
     commands.spawn((
-        Sprite::from_color(COLOR_ROAD_ASPHALT, Vec2::new(ROAD_WIDTH, WINDOW_HEIGHT)),
+        Sprite::from_color(COLOR_ROAD_ASPHALT, Vec2::new(ROAD_WIDTH, WORLD_HEIGHT)),
         Transform::from_xyz(0.0, 0.0, Z_ROAD),
         Road {
             orientation: RoadOrientation::Vertical,
             width: ROAD_WIDTH,
-            length: WINDOW_HEIGHT,
+            length: WORLD_HEIGHT,
         },
     ));
 
-    // Z-layer slightly above asphalt but strictly below Z_CAR (1.0)
+    // Curved Road: quarter-circle arc from (CURVE_START_X, 0.0) to (CURVE_START_X + CURVE_RADIUS, CURVE_CENTER.y)
+    let curve_arc_len = std::f32::consts::FRAC_PI_2 * CURVE_RADIUS;
+    commands.spawn((
+        Transform::from_xyz(CURVE_START_X, CURVE_CENTER.y, Z_ROAD),
+        Road {
+            orientation: RoadOrientation::Curved,
+            width: ROAD_WIDTH,
+            length: curve_arc_len,
+        },
+    ));
+
     let z_marking = Z_ROAD + 0.01;
 
-    // --- Horizontal Road Markings ---
-    // Top border (y = half_road)
+    // --- Horizontal Straight Markings ---
+    // Top border (y = half_road, from -half_w to CURVE_START_X)
     commands.spawn((
-        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(WINDOW_WIDTH, border_thickness)),
-        Transform::from_xyz(0.0, half_road, z_marking),
+        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(h_straight_len, border_thickness)),
+        Transform::from_xyz(h_straight_center_x, half_road, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Border,
         },
     ));
 
-    // Bottom border (y = -half_road)
+    // Bottom border (y = -half_road, from -half_w to CURVE_START_X)
     commands.spawn((
-        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(WINDOW_WIDTH, border_thickness)),
-        Transform::from_xyz(0.0, -half_road, z_marking),
+        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(h_straight_len, border_thickness)),
+        Transform::from_xyz(h_straight_center_x, -half_road, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Border,
         },
     ));
 
-    // Horizontal Centerline: West segment (from -half_w to -half_road)
-    let h_segment_len = half_w - half_road;
-    let west_center_x = -half_road - (h_segment_len / 2.0);
+    // West Centerline segment (from -half_w to -half_road)
+    let west_seg_len = half_w - half_road;
+    let west_center_x = -half_road - (west_seg_len / 2.0);
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_CENTERLINE,
-            Vec2::new(h_segment_len, centerline_thickness),
-        ),
+        Sprite::from_color(COLOR_ROAD_CENTERLINE, Vec2::new(west_seg_len, centerline_thickness)),
         Transform::from_xyz(west_center_x, 0.0, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Centerline,
         },
     ));
 
-    // Horizontal Centerline: East segment (from half_road to half_w)
-    let east_center_x = half_road + (h_segment_len / 2.0);
+    // East Straight Centerline segment (from half_road to CURVE_START_X)
+    let east_straight_seg_len = CURVE_START_X - half_road;
+    let east_straight_center_x = half_road + (east_straight_seg_len / 2.0);
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_CENTERLINE,
-            Vec2::new(h_segment_len, centerline_thickness),
-        ),
-        Transform::from_xyz(east_center_x, 0.0, z_marking),
+        Sprite::from_color(COLOR_ROAD_CENTERLINE, Vec2::new(east_straight_seg_len, centerline_thickness)),
+        Transform::from_xyz(east_straight_center_x, 0.0, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Centerline,
         },
@@ -263,10 +313,7 @@ pub fn setup_roads(mut commands: Commands) {
     // --- Vertical Road Markings ---
     // Left border (x = -half_road)
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_BORDER,
-            Vec2::new(border_thickness, WINDOW_HEIGHT),
-        ),
+        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(border_thickness, WORLD_HEIGHT)),
         Transform::from_xyz(-half_road, 0.0, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Border,
@@ -275,42 +322,94 @@ pub fn setup_roads(mut commands: Commands) {
 
     // Right border (x = half_road)
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_BORDER,
-            Vec2::new(border_thickness, WINDOW_HEIGHT),
-        ),
+        Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(border_thickness, WORLD_HEIGHT)),
         Transform::from_xyz(half_road, 0.0, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Border,
         },
     ));
 
-    // Vertical Centerline: South segment (from -half_h to -half_road)
-    let v_segment_len = half_h - half_road;
-    let south_center_y = -half_road - (v_segment_len / 2.0);
+    // South Centerline segment (from -half_h to -half_road)
+    let south_seg_len = half_h - half_road;
+    let south_center_y = -half_road - (south_seg_len / 2.0);
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_CENTERLINE,
-            Vec2::new(centerline_thickness, v_segment_len),
-        ),
+        Sprite::from_color(COLOR_ROAD_CENTERLINE, Vec2::new(centerline_thickness, south_seg_len)),
         Transform::from_xyz(0.0, south_center_y, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Centerline,
         },
     ));
 
-    // Vertical Centerline: North segment (from half_road to half_h)
-    let north_center_y = half_road + (v_segment_len / 2.0);
+    // North Centerline segment (from half_road to half_h)
+    let north_seg_len = half_h - half_road;
+    let north_center_y = half_road + (north_seg_len / 2.0);
     commands.spawn((
-        Sprite::from_color(
-            COLOR_ROAD_CENTERLINE,
-            Vec2::new(centerline_thickness, v_segment_len),
-        ),
+        Sprite::from_color(COLOR_ROAD_CENTERLINE, Vec2::new(centerline_thickness, north_seg_len)),
         Transform::from_xyz(0.0, north_center_y, z_marking),
         RoadMarking {
             marking_type: RoadMarkingType::Centerline,
         },
     ));
+
+    // --- Curved Road Markings and Asphalt Segments ---
+    let num_curve_steps = 32;
+    let d_theta = std::f32::consts::FRAC_PI_2 / (num_curve_steps as f32);
+    let asphalt_seg_len = CURVE_RADIUS * d_theta * 1.10;
+    let centerline_seg_len = CURVE_RADIUS * d_theta * 1.05;
+    let inner_border_radius = CURVE_RADIUS - half_road;
+    let outer_border_radius = CURVE_RADIUS + half_road;
+    let inner_border_seg_len = inner_border_radius * d_theta * 1.05;
+    let outer_border_seg_len = outer_border_radius * d_theta * 1.05;
+
+    for i in 0..num_curve_steps {
+        let theta = (i as f32 + 0.5) * d_theta;
+        let rot = Quat::from_rotation_z(theta);
+
+        // Asphalt segment
+        let pos_asphalt = Vec2::new(
+            CURVE_CENTER.x + CURVE_RADIUS * theta.sin(),
+            CURVE_CENTER.y - CURVE_RADIUS * theta.cos(),
+        );
+        commands.spawn((
+            Sprite::from_color(COLOR_ROAD_ASPHALT, Vec2::new(asphalt_seg_len, ROAD_WIDTH)),
+            Transform::from_xyz(pos_asphalt.x, pos_asphalt.y, Z_ROAD).with_rotation(rot),
+        ));
+
+        // Centerline segment
+        commands.spawn((
+            Sprite::from_color(COLOR_ROAD_CENTERLINE, Vec2::new(centerline_seg_len, centerline_thickness)),
+            Transform::from_xyz(pos_asphalt.x, pos_asphalt.y, z_marking).with_rotation(rot),
+            RoadMarking {
+                marking_type: RoadMarkingType::Centerline,
+            },
+        ));
+
+        // Inner border segment
+        let pos_inner = Vec2::new(
+            CURVE_CENTER.x + inner_border_radius * theta.sin(),
+            CURVE_CENTER.y - inner_border_radius * theta.cos(),
+        );
+        commands.spawn((
+            Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(inner_border_seg_len, border_thickness)),
+            Transform::from_xyz(pos_inner.x, pos_inner.y, z_marking).with_rotation(rot),
+            RoadMarking {
+                marking_type: RoadMarkingType::Border,
+            },
+        ));
+
+        // Outer border segment
+        let pos_outer = Vec2::new(
+            CURVE_CENTER.x + outer_border_radius * theta.sin(),
+            CURVE_CENTER.y - outer_border_radius * theta.cos(),
+        );
+        commands.spawn((
+            Sprite::from_color(COLOR_ROAD_BORDER, Vec2::new(outer_border_seg_len, border_thickness)),
+            Transform::from_xyz(pos_outer.x, pos_outer.y, z_marking).with_rotation(rot),
+            RoadMarking {
+                marking_type: RoadMarkingType::Border,
+            },
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -363,7 +462,7 @@ mod tests {
         // Check road entities
         let mut road_query = app.world_mut().query::<(&Road, &Transform)>();
         let roads: Vec<(&Road, &Transform)> = road_query.iter(app.world()).collect();
-        assert_eq!(roads.len(), 2, "Should spawn horizontal and vertical roads");
+        assert_eq!(roads.len(), 3, "Should spawn horizontal, vertical, and curved roads");
 
         for (road, transform) in &roads {
             assert_eq!(transform.translation.z, Z_ROAD);
@@ -373,11 +472,7 @@ mod tests {
         // Check marking entities
         let mut marking_query = app.world_mut().query::<(&RoadMarking, &Transform)>();
         let markings: Vec<(&RoadMarking, &Transform)> = marking_query.iter(app.world()).collect();
-        assert_eq!(
-            markings.len(),
-            8,
-            "Should spawn 4 borders and 4 centerlines"
-        );
+        assert!(!markings.is_empty(), "Should spawn borders and centerlines");
 
         for (_marking, transform) in markings {
             assert!(
@@ -406,24 +501,30 @@ mod tests {
         app.update();
 
         // Verify horizontal road at y = 0, vertical road at x = 0
-        let mut road_query = app.world_mut().query::<(&Road, &Transform, &Sprite)>();
+        let mut road_query = app.world_mut().query::<(&Road, &Transform, Option<&Sprite>)>();
         let mut found_h = false;
         let mut found_v = false;
-        for (road, transform, sprite) in road_query.iter(app.world()) {
+        let mut found_c = false;
+        for (road, transform, maybe_sprite) in road_query.iter(app.world()) {
             match road.orientation {
                 RoadOrientation::Horizontal => {
-                    assert_eq!(transform.translation, Vec3::new(0.0, 0.0, Z_ROAD));
-                    assert_eq!(sprite.custom_size, Some(Vec2::new(WINDOW_WIDTH, ROAD_WIDTH)));
+                    assert_eq!(transform.translation.z, Z_ROAD);
+                    assert_eq!(maybe_sprite.unwrap().custom_size, Some(Vec2::new(HALF_WORLD_WIDTH + CURVE_START_X, ROAD_WIDTH)));
                     found_h = true;
                 }
                 RoadOrientation::Vertical => {
                     assert_eq!(transform.translation, Vec3::new(0.0, 0.0, Z_ROAD));
-                    assert_eq!(sprite.custom_size, Some(Vec2::new(ROAD_WIDTH, WINDOW_HEIGHT)));
+                    assert_eq!(maybe_sprite.unwrap().custom_size, Some(Vec2::new(ROAD_WIDTH, WORLD_HEIGHT)));
                     found_v = true;
+                }
+                RoadOrientation::Curved => {
+                    assert_eq!(transform.translation, Vec3::new(CURVE_START_X, CURVE_CENTER.y, Z_ROAD));
+                    assert!(maybe_sprite.is_none(), "Curved road parent should not have a stray sprite at the arc center");
+                    found_c = true;
                 }
             }
         }
-        assert!(found_h && found_v);
+        assert!(found_h && found_v && found_c);
 
         // Verify borders and centerlines at exact offsets
         let mut marking_query = app.world_mut().query::<(&RoadMarking, &Transform)>();
@@ -435,16 +536,58 @@ mod tests {
                 RoadMarkingType::Centerline => centerline_positions.push(transform.translation.truncate()),
             }
         }
-        assert_eq!(border_positions.len(), 4);
-        assert!(border_positions.contains(&Vec2::new(0.0, 60.0)));
-        assert!(border_positions.contains(&Vec2::new(0.0, -60.0)));
+        assert_eq!(border_positions.len(), 68);
+        let h_straight_center_x = (-HALF_WORLD_WIDTH + CURVE_START_X) / 2.0;
+        assert!(border_positions.contains(&Vec2::new(h_straight_center_x, 60.0)));
+        assert!(border_positions.contains(&Vec2::new(h_straight_center_x, -60.0)));
         assert!(border_positions.contains(&Vec2::new(-60.0, 0.0)));
         assert!(border_positions.contains(&Vec2::new(60.0, 0.0)));
 
-        assert_eq!(centerline_positions.len(), 4);
-        assert!(centerline_positions.contains(&Vec2::new(-230.0, 0.0)));
-        assert!(centerline_positions.contains(&Vec2::new(230.0, 0.0)));
-        assert!(centerline_positions.contains(&Vec2::new(0.0, -230.0)));
-        assert!(centerline_positions.contains(&Vec2::new(0.0, 230.0)));
+        assert_eq!(centerline_positions.len(), 36);
+        let west_center_x = -60.0 - ((HALF_WORLD_WIDTH - 60.0) / 2.0);
+        let east_straight_center_x = 60.0 + ((CURVE_START_X - 60.0) / 2.0);
+        let south_center_y = -60.0 - ((HALF_WORLD_HEIGHT - 60.0) / 2.0);
+        let north_center_y = 60.0 + ((HALF_WORLD_HEIGHT - 60.0) / 2.0);
+        assert!(centerline_positions.contains(&Vec2::new(west_center_x, 0.0)));
+        assert!(centerline_positions.contains(&Vec2::new(east_straight_center_x, 0.0)));
+        assert!(centerline_positions.contains(&Vec2::new(0.0, south_center_y)));
+        assert!(centerline_positions.contains(&Vec2::new(0.0, north_center_y)));
     }
+
+    #[test]
+    fn test_curved_road_geometry_queries() {
+        let geom = RoadGeometry::default();
+
+        // Start of curve (at x = 160, y = 0)
+        assert!(geom.is_on_curved_road(Vec2::new(160.0, 0.0)));
+        assert!(geom.is_on_road(Vec2::new(160.0, 0.0)));
+
+        // Midpoint of curve around 45 degrees
+        let angle = std::f32::consts::FRAC_PI_4;
+        let mid_point = Vec2::new(
+            geom.curve_center.x + geom.curve_radius * angle.sin(),
+            geom.curve_center.y - geom.curve_radius * angle.cos(),
+        );
+        assert!(geom.is_on_curved_road(mid_point));
+        assert!(geom.is_on_road(mid_point));
+
+        // Outer and inner edges of the curve
+        let outer_point = Vec2::new(
+            geom.curve_center.x + (geom.curve_radius + 50.0) * angle.sin(),
+            geom.curve_center.y - (geom.curve_radius + 50.0) * angle.cos(),
+        );
+        assert!(geom.is_on_curved_road(outer_point));
+
+        // Off the curve (too far inside or outside)
+        let far_inside = Vec2::new(
+            geom.curve_center.x + (geom.curve_radius - 100.0) * angle.sin(),
+            geom.curve_center.y - (geom.curve_radius - 100.0) * angle.cos(),
+        );
+        assert!(!geom.is_on_curved_road(far_inside));
+
+        // End of curve at the northern boundary (x = 660, y = 500)
+        let end_point = Vec2::new(geom.curve_center.x + geom.curve_radius, geom.curve_center.y);
+        assert!(geom.is_on_curved_road(end_point));
+        assert!(geom.is_on_road(end_point));
+}
 }

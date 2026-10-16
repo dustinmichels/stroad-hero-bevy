@@ -16,7 +16,7 @@ pub const CAR_COLORS: [Color; 5] = [
 ];
 
 /// Enumeration of traffic lanes in the intersection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrafficLane {
     Eastbound,
     Westbound,
@@ -44,12 +44,12 @@ impl TrafficLane {
 
     /// Spawn origin located off-screen beyond the window margin
     pub fn spawn_position(&self, road_geom: &RoadGeometry) -> Vec3 {
-        let spawn_x_dist = HALF_WINDOW_WIDTH + SPAWN_MARGIN;
-        let spawn_y_dist = HALF_WINDOW_HEIGHT + SPAWN_MARGIN;
+        let spawn_x_dist = HALF_WORLD_WIDTH + SPAWN_MARGIN;
+        let spawn_y_dist = HALF_WORLD_HEIGHT + SPAWN_MARGIN;
 
         match self {
             TrafficLane::Eastbound => Vec3::new(-spawn_x_dist, road_geom.east_lane_y(), Z_CAR),
-            TrafficLane::Westbound => Vec3::new(spawn_x_dist, road_geom.west_lane_y(), Z_CAR),
+            TrafficLane::Westbound => Vec3::new(road_geom.curve_west_lane_x(), spawn_y_dist, Z_CAR),
             TrafficLane::Southbound => Vec3::new(road_geom.south_lane_x(), spawn_y_dist, Z_CAR),
             TrafficLane::Northbound => Vec3::new(road_geom.north_lane_x(), -spawn_y_dist, Z_CAR),
         }
@@ -69,12 +69,14 @@ impl TrafficLane {
 pub struct Car {
     /// Constant travel speed (units per second)
     pub speed: f32,
-    /// Fixed unit direction vector (no steering or turning)
+    /// Fixed or current unit direction vector
     pub direction: Vec2,
     /// Bounding box width along the X-axis
     pub width: f32,
     /// Bounding box height along the Y-axis
     pub height: f32,
+    /// Assigned traffic lane, if spawned via traffic system
+    pub lane: Option<TrafficLane>,
 }
 
 impl Car {
@@ -84,7 +86,13 @@ impl Car {
             direction: direction.normalize_or_zero(),
             width,
             height,
+            lane: None,
         }
+    }
+
+    pub fn with_lane(mut self, lane: TrafficLane) -> Self {
+        self.lane = Some(lane);
+        self
     }
 
     pub fn dimensions(&self) -> Vec2 {
@@ -141,8 +149,8 @@ impl Default for SpawnTimer {
 
 /// Helper function to check if a car's position has exited the opposite side of the screen
 pub fn is_car_out_of_bounds(pos: Vec2, direction: Vec2) -> bool {
-    let despawn_x = HALF_WINDOW_WIDTH + DESPAWN_MARGIN;
-    let despawn_y = HALF_WINDOW_HEIGHT + DESPAWN_MARGIN;
+    let despawn_x = HALF_WORLD_WIDTH + DESPAWN_MARGIN;
+    let despawn_y = HALF_WORLD_HEIGHT + DESPAWN_MARGIN;
 
     if direction.x > 0.0 && pos.x > despawn_x {
         return true;
@@ -169,20 +177,28 @@ pub fn spawn_car_in_lane(
     lane: TrafficLane,
     color_index: usize,
 ) -> Entity {
-    let direction = lane.direction();
+    let initial_dir = match lane {
+        TrafficLane::Westbound => Vec2::new(0.0, -1.0),
+        _ => lane.direction(),
+    };
     let spawn_pos = lane.spawn_position(road_geom);
     let dims = lane.car_dimensions();
 
-    let car = Car::new(CAR_SPEED, direction, dims.x, dims.y);
+    let car = Car::new(CAR_SPEED, initial_dir, dims.x, dims.y).with_lane(lane);
     let mesh = meshes.add(Rectangle::new(dims.x, dims.y));
     let color = CAR_COLORS[color_index % CAR_COLORS.len()];
     let material = materials.add(ColorMaterial::from_color(color));
+
+    let rotation = match lane {
+        TrafficLane::Westbound => Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
+        _ => Quat::IDENTITY,
+    };
 
     commands
         .spawn((
             Mesh2d(mesh),
             MeshMaterial2d(material),
-            Transform::from_translation(spawn_pos),
+            Transform::from_translation(spawn_pos).with_rotation(rotation),
             car,
         ))
         .id()
@@ -211,13 +227,137 @@ pub fn spawn_cars(
     }
 }
 
-/// System to advance each car's position along its fixed directional velocity
-pub fn car_movement(time: Res<Time>, mut query: Query<(&Car, &mut Transform)>) {
+pub fn car_movement(
+    time: Res<Time>,
+    road_geom: Option<Res<RoadGeometry>>,
+    mut query: Query<(&mut Car, &mut Transform)>,
+) {
     let dt = time.delta_secs();
-    for (car, mut transform) in &mut query {
-        let delta = car.direction * car.speed * dt;
-        transform.translation.x += delta.x;
-        transform.translation.y += delta.y;
+    if dt <= 0.0 {
+        return;
+    }
+
+    let default_geom = RoadGeometry::default();
+    let geom = road_geom.as_deref().unwrap_or(&default_geom);
+    let curve_start_x = geom.curve_start_x;
+    let curve_center = geom.curve_center;
+    let r_east = geom.curve_east_lane_radius();
+    let r_west = geom.curve_west_lane_radius();
+    let east_lane_y = geom.east_lane_y();
+    let west_lane_y = geom.west_lane_y();
+    let south_lane_x = geom.south_lane_x();
+    let north_lane_x = geom.north_lane_x();
+
+    for (mut car, mut transform) in &mut query {
+        match car.lane {
+            Some(TrafficLane::Eastbound) => {
+                let pos = transform.translation.truncate();
+                if pos.x < curve_start_x {
+                    // Straight horizontal segment heading East
+                    let next_x = pos.x + car.speed * dt;
+                    if next_x < curve_start_x {
+                        transform.translation.x = next_x;
+                        transform.translation.y = east_lane_y;
+                        car.direction = Vec2::X;
+                        transform.rotation = Quat::IDENTITY;
+                    } else {
+                        // Transitions into curve
+                        let excess_s = next_x - curve_start_x;
+                        let theta = excess_s / r_east;
+                        transform.translation.x = curve_start_x + r_east * theta.sin();
+                        transform.translation.y = curve_center.y - r_east * theta.cos();
+                        car.direction = Vec2::new(theta.cos(), theta.sin());
+                        transform.rotation = Quat::from_rotation_z(theta);
+                    }
+                } else if pos.y < curve_center.y {
+                    // On the curve heading towards the top exit
+                    let current_theta = (pos.x - curve_start_x).atan2(curve_center.y - pos.y);
+                    let d_theta = (car.speed / r_east) * dt;
+                    let next_theta = current_theta + d_theta;
+
+                    if next_theta < std::f32::consts::FRAC_PI_2 {
+                        transform.translation.x = curve_start_x + r_east * next_theta.sin();
+                        transform.translation.y = curve_center.y - r_east * next_theta.cos();
+                        car.direction = Vec2::new(next_theta.cos(), next_theta.sin());
+                        transform.rotation = Quat::from_rotation_z(next_theta);
+                    } else {
+                        // Exits curve to the North
+                        let excess_s = (next_theta - std::f32::consts::FRAC_PI_2) * r_east;
+                        transform.translation.x = curve_start_x + r_east;
+                        transform.translation.y = curve_center.y + excess_s;
+                        car.direction = Vec2::Y;
+                        transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                    }
+                } else {
+                    // Past the curve heading straight North
+                    transform.translation.y += car.speed * dt;
+                    transform.translation.x = curve_start_x + r_east;
+                    car.direction = Vec2::Y;
+                    transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                }
+            }
+            Some(TrafficLane::Westbound) => {
+                let pos = transform.translation.truncate();
+                if pos.y > curve_center.y {
+                    // Straight vertical segment heading South into the curve
+                    let next_y = pos.y - car.speed * dt;
+                    if next_y > curve_center.y {
+                        transform.translation.y = next_y;
+                        transform.translation.x = curve_start_x + r_west;
+                        car.direction = -Vec2::Y;
+                        transform.rotation = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+                    } else {
+                        // Transitions into curve
+                        let excess_s = curve_center.y - next_y;
+                        let theta = std::f32::consts::FRAC_PI_2 - (excess_s / r_west);
+                        transform.translation.x = curve_start_x + r_west * theta.sin();
+                        transform.translation.y = curve_center.y - r_west * theta.cos();
+                        car.direction = Vec2::new(-theta.cos(), -theta.sin());
+                        transform.rotation = Quat::from_rotation_z(theta - std::f32::consts::PI);
+                    }
+                } else if pos.x > curve_start_x {
+                    // On the curve moving towards theta = 0
+                    let current_theta = (pos.x - curve_start_x).atan2(curve_center.y - pos.y);
+                    let d_theta = (car.speed / r_west) * dt;
+                    let next_theta = current_theta - d_theta;
+
+                    if next_theta > 0.0 {
+                        transform.translation.x = curve_start_x + r_west * next_theta.sin();
+                        transform.translation.y = curve_center.y - r_west * next_theta.cos();
+                        car.direction = Vec2::new(-next_theta.cos(), -next_theta.sin());
+                        transform.rotation = Quat::from_rotation_z(next_theta - std::f32::consts::PI);
+                    } else {
+                        // Exits curve to the West
+                        let excess_s = (-next_theta) * r_west;
+                        transform.translation.x = curve_start_x - excess_s;
+                        transform.translation.y = west_lane_y;
+                        car.direction = -Vec2::X;
+                        transform.rotation = Quat::from_rotation_z(std::f32::consts::PI);
+                    }
+                } else {
+                    // Straight horizontal segment heading West
+                    transform.translation.x -= car.speed * dt;
+                    transform.translation.y = west_lane_y;
+                    car.direction = -Vec2::X;
+                    transform.rotation = Quat::from_rotation_z(std::f32::consts::PI);
+                }
+            }
+            Some(TrafficLane::Southbound) => {
+                transform.translation.y -= car.speed * dt;
+                transform.translation.x = south_lane_x;
+                car.direction = -Vec2::Y;
+            }
+            Some(TrafficLane::Northbound) => {
+                transform.translation.y += car.speed * dt;
+                transform.translation.x = north_lane_x;
+                car.direction = Vec2::Y;
+            }
+            None => {
+                let delta = car.direction * car.speed * dt;
+                transform.translation.x += delta.x;
+                transform.translation.y += delta.y;
+            }
+        }
     }
 }
 
@@ -304,71 +444,47 @@ mod tests {
     fn test_traffic_lane_spawn_positions() {
         let geom = RoadGeometry::default();
         let east_pos = TrafficLane::Eastbound.spawn_position(&geom);
-        assert_eq!(east_pos.x, -HALF_WINDOW_WIDTH - SPAWN_MARGIN);
+        assert_eq!(east_pos.x, -HALF_WORLD_WIDTH - SPAWN_MARGIN);
         assert_eq!(east_pos.y, geom.east_lane_y());
         assert_eq!(east_pos.z, Z_CAR);
 
         let west_pos = TrafficLane::Westbound.spawn_position(&geom);
-        assert_eq!(west_pos.x, HALF_WINDOW_WIDTH + SPAWN_MARGIN);
-        assert_eq!(west_pos.y, geom.west_lane_y());
+        assert_eq!(west_pos.x, geom.curve_west_lane_x());
+        assert_eq!(west_pos.y, HALF_WORLD_HEIGHT + SPAWN_MARGIN);
         assert_eq!(west_pos.z, Z_CAR);
 
         let south_pos = TrafficLane::Southbound.spawn_position(&geom);
         assert_eq!(south_pos.x, geom.south_lane_x());
-        assert_eq!(south_pos.y, HALF_WINDOW_HEIGHT + SPAWN_MARGIN);
+        assert_eq!(south_pos.y, HALF_WORLD_HEIGHT + SPAWN_MARGIN);
         assert_eq!(south_pos.z, Z_CAR);
 
         let north_pos = TrafficLane::Northbound.spawn_position(&geom);
         assert_eq!(north_pos.x, geom.north_lane_x());
-        assert_eq!(north_pos.y, -HALF_WINDOW_HEIGHT - SPAWN_MARGIN);
+        assert_eq!(north_pos.y, -HALF_WORLD_HEIGHT - SPAWN_MARGIN);
         assert_eq!(north_pos.z, Z_CAR);
     }
 
     #[test]
     fn test_is_car_out_of_bounds() {
+        let despawn_x = HALF_WORLD_WIDTH + DESPAWN_MARGIN;
+        let despawn_y = HALF_WORLD_HEIGHT + DESPAWN_MARGIN;
+
         // Eastbound (heading +X)
-        assert!(!is_car_out_of_bounds(
-            Vec2::new(0.0, 0.0),
-            Vec2::new(1.0, 0.0)
-        ));
-        assert!(!is_car_out_of_bounds(
-            Vec2::new(480.0, 0.0),
-            Vec2::new(1.0, 0.0)
-        ));
-        assert!(is_car_out_of_bounds(
-            Vec2::new(480.1, 0.0),
-            Vec2::new(1.0, 0.0)
-        ));
+        assert!(!is_car_out_of_bounds(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)));
+        assert!(!is_car_out_of_bounds(Vec2::new(despawn_x, 0.0), Vec2::new(1.0, 0.0)));
+        assert!(is_car_out_of_bounds(Vec2::new(despawn_x + 0.1, 0.0), Vec2::new(1.0, 0.0)));
 
         // Westbound (heading -X)
-        assert!(!is_car_out_of_bounds(
-            Vec2::new(-480.0, 0.0),
-            Vec2::new(-1.0, 0.0)
-        ));
-        assert!(is_car_out_of_bounds(
-            Vec2::new(-480.1, 0.0),
-            Vec2::new(-1.0, 0.0)
-        ));
+        assert!(!is_car_out_of_bounds(Vec2::new(-despawn_x, 0.0), Vec2::new(-1.0, 0.0)));
+        assert!(is_car_out_of_bounds(Vec2::new(-despawn_x - 0.1, 0.0), Vec2::new(-1.0, 0.0)));
 
         // Northbound (heading +Y)
-        assert!(!is_car_out_of_bounds(
-            Vec2::new(0.0, 480.0),
-            Vec2::new(0.0, 1.0)
-        ));
-        assert!(is_car_out_of_bounds(
-            Vec2::new(0.0, 480.1),
-            Vec2::new(0.0, 1.0)
-        ));
+        assert!(!is_car_out_of_bounds(Vec2::new(0.0, despawn_y), Vec2::new(0.0, 1.0)));
+        assert!(is_car_out_of_bounds(Vec2::new(0.0, despawn_y + 0.1), Vec2::new(0.0, 1.0)));
 
         // Southbound (heading -Y)
-        assert!(!is_car_out_of_bounds(
-            Vec2::new(0.0, -480.0),
-            Vec2::new(0.0, -1.0)
-        ));
-        assert!(is_car_out_of_bounds(
-            Vec2::new(0.0, -480.1),
-            Vec2::new(0.0, -1.0)
-        ));
+        assert!(!is_car_out_of_bounds(Vec2::new(0.0, -despawn_y), Vec2::new(0.0, -1.0)));
+        assert!(is_car_out_of_bounds(Vec2::new(0.0, -despawn_y - 0.1), Vec2::new(0.0, -1.0)));
     }
 
     #[test]
@@ -423,24 +539,25 @@ mod tests {
             ))
             .id();
 
-        // Exited car (+X eastbound past 480)
+        // Exited car (+X eastbound past despawn)
+        let despawn_x = HALF_WORLD_WIDTH + DESPAWN_MARGIN;
         let car_dead_e = app
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::new(1.0, 0.0), 48.0, 26.0),
-                Transform::from_xyz(481.0, -30.0, Z_CAR),
+                Transform::from_xyz(despawn_x + 1.0, -30.0, Z_CAR),
             ))
             .id();
 
-        // Exited car (-Y southbound past -480)
+        // Exited car (-Y southbound past despawn)
+        let despawn_y = HALF_WORLD_HEIGHT + DESPAWN_MARGIN;
         let car_dead_s = app
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::new(0.0, -1.0), 26.0, 48.0),
-                Transform::from_xyz(-30.0, -485.0, Z_CAR),
+                Transform::from_xyz(-30.0, -despawn_y - 5.0, Z_CAR),
             ))
             .id();
-
         app.add_systems(Update, car_cleanup);
         app.update();
 
@@ -496,7 +613,7 @@ mod tests {
             .expect("Transform should exist");
         assert_eq!(transform.translation.z, Z_CAR);
         assert_eq!(transform.translation.y, geom.east_lane_y());
-        assert_eq!(transform.translation.x, -HALF_WINDOW_WIDTH - SPAWN_MARGIN);
+        assert_eq!(transform.translation.x, -HALF_WORLD_WIDTH - SPAWN_MARGIN);
 
         assert!(app.world().get::<Mesh2d>(car_id).is_some());
         assert!(
@@ -553,7 +670,7 @@ mod tests {
         let duration_secs = 12.0;
         let total_frames = (duration_secs / dt) as usize;
 
-        let mut observed_spawn_directions = std::collections::HashSet::new();
+        let mut observed_lanes = std::collections::HashSet::new();
         let mut max_active_cars = 0;
 
         for _ in 0..total_frames {
@@ -568,7 +685,9 @@ mod tests {
             for (car, transform) in car_query.iter(app.world()) {
                 assert!((car.direction.length() - 1.0).abs() < 1e-4);
                 assert_eq!(car.speed, CAR_SPEED);
-                observed_spawn_directions.insert((car.direction.x as i32, car.direction.y as i32));
+                if let Some(lane) = car.lane {
+                    observed_lanes.insert(lane);
+                }
 
                 let pos = transform.translation.truncate();
 
@@ -576,7 +695,7 @@ mod tests {
             }
         }
 
-        assert_eq!(observed_spawn_directions.len(), 4, "All 4 directions should have spawned");
+        assert_eq!(observed_lanes.len(), 4, "All 4 lanes should have spawned");
         assert!(max_active_cars >= 2, "Cars should have been active concurrently");
         assert!(max_active_cars <= 12, "Active cars should be bounded, got {}", max_active_cars);
 
@@ -587,12 +706,117 @@ mod tests {
             timer.reset();
         }
 
-        for _ in 0..100 {
-
+        for _ in 0..200 {
             app.update();
         }
 
         let remaining_cars = app.world_mut().query::<&Car>().iter(app.world()).count();
         assert_eq!(remaining_cars, 0, "All cars should have despawned cleanly without entity leakage");
+    }
+
+    #[test]
+    fn test_eastbound_car_follows_curve() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, car_movement);
+
+        // Spawn eastbound car just before the curve at x = 150
+        let car_id = app
+            .world_mut()
+            .spawn((
+                Car::new(200.0, Vec2::X, 48.0, 26.0).with_lane(TrafficLane::Eastbound),
+                Transform::from_xyz(150.0, -30.0, Z_CAR),
+            ))
+            .id();
+
+        // Advance 0.1s -> should enter curve (x > 160, y starts turning upward)
+        let mut time = app.world_mut().resource_mut::<Time>();
+        time.advance_by(std::time::Duration::from_millis(100));
+        app.update();
+
+        let mut query = app.world_mut().query::<(&Car, &Transform)>();
+        let (car, transform) = query.get(app.world(), car_id).unwrap();
+        assert!(transform.translation.x >= 160.0);
+        assert!(transform.translation.y > -30.0);
+        assert!(car.direction.y > 0.0);
+    }
+
+    #[test]
+    fn test_westbound_car_follows_curve() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, car_movement);
+
+        // Spawn westbound car above curve at y = 510, x = 630
+        let car_id = app
+            .world_mut()
+            .spawn((
+                Car::new(200.0, -Vec2::Y, 48.0, 26.0).with_lane(TrafficLane::Westbound),
+                Transform::from_xyz(630.0, 510.0, Z_CAR),
+            ))
+            .id();
+
+        // Advance 0.1s -> enters curve (y < 500, moving towards x < 630)
+        let mut time = app.world_mut().resource_mut::<Time>();
+        time.advance_by(std::time::Duration::from_millis(100));
+        app.update();
+
+        let mut query = app.world_mut().query::<(&Car, &Transform)>();
+        let (car, transform) = query.get(app.world(), car_id).unwrap();
+        assert!(transform.translation.y <= 500.0);
+        assert!(transform.translation.x < 630.0);
+        assert!(car.direction.x < 0.0);
+    }
+
+    #[test]
+    fn test_eastbound_and_westbound_complete_curve_traversal() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<RoadGeometry>()
+            .add_systems(Update, car_movement);
+
+        let geom = RoadGeometry::default();
+
+        // Eastbound car starts at x = 0, y = -30
+        let car_e = app
+            .world_mut()
+            .spawn((
+                Car::new(240.0, Vec2::X, 48.0, 26.0).with_lane(TrafficLane::Eastbound),
+                Transform::from_xyz(0.0, geom.east_lane_y(), Z_CAR),
+            ))
+            .id();
+
+        // Westbound car starts at x = 630, y = 560
+        let car_w = app
+            .world_mut()
+            .spawn((
+                Car::new(240.0, -Vec2::Y, 48.0, 26.0).with_lane(TrafficLane::Westbound),
+                Transform::from_xyz(geom.curve_west_lane_x(), 560.0, Z_CAR)
+                    .with_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)),
+            ))
+            .id();
+
+        // Step forward through time (5 seconds)
+        let dt = 0.05;
+        let steps = 100;
+        for _ in 0..steps {
+            let mut time = app.world_mut().resource_mut::<Time>();
+            time.advance_by(std::time::Duration::from_secs_f32(dt));
+            app.update();
+        }
+
+        let mut query = app.world_mut().query::<(&Car, &Transform)>();
+
+        // Eastbound car has traversed curve and is now moving northbound at x = 690, y > 500
+        let (car_e_ref, trans_e) = query.get(app.world(), car_e).unwrap();
+        assert_eq!(trans_e.translation.x, geom.curve_east_lane_x());
+        assert!(trans_e.translation.y >= 500.0);
+        assert_eq!(car_e_ref.direction, Vec2::Y);
+
+        // Westbound car has traversed curve and is now moving westbound at x < 160, y = 30
+        let (car_w_ref, trans_w) = query.get(app.world(), car_w).unwrap();
+        assert!(trans_w.translation.x <= geom.curve_start_x);
+        assert_eq!(trans_w.translation.y, geom.west_lane_y());
+        assert_eq!(car_w_ref.direction, -Vec2::X);
     }
 }

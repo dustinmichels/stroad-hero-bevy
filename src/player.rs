@@ -141,23 +141,23 @@ mod tests {
     #[test]
     fn test_clamp_position_outside_bounds() {
         let radius = 10.0;
-        // Min bounds are -400.0, max are 400.0. With radius 10, valid range is [-390.0, 390.0]
-        let too_far_left = Vec2::new(-500.0, 0.0);
+        // Bounds are [-800.0, 800.0] x [-500.0, 500.0]. With radius 10, valid range is [-790.0, 790.0] x [-490.0, 490.0]
+        let too_far_left = Vec2::new(-900.0, 0.0);
         let clamped_left = clamp_position(too_far_left, radius);
-        assert_eq!(clamped_left.x, -390.0);
+        assert_eq!(clamped_left.x, -790.0);
         assert_eq!(clamped_left.y, 0.0);
 
-        let too_far_right = Vec2::new(500.0, 0.0);
+        let too_far_right = Vec2::new(900.0, 0.0);
         let clamped_right = clamp_position(too_far_right, radius);
-        assert_eq!(clamped_right.x, 390.0);
+        assert_eq!(clamped_right.x, 790.0);
 
-        let too_far_up = Vec2::new(0.0, 450.0);
+        let too_far_up = Vec2::new(0.0, 600.0);
         let clamped_up = clamp_position(too_far_up, radius);
-        assert_eq!(clamped_up.y, 390.0);
+        assert_eq!(clamped_up.y, 490.0);
 
-        let too_far_down = Vec2::new(0.0, -450.0);
+        let too_far_down = Vec2::new(0.0, -600.0);
         let clamped_down = clamp_position(too_far_down, radius);
-        assert_eq!(clamped_down.y, -390.0);
+        assert_eq!(clamped_down.y, -490.0);
     }
 
     #[test]
@@ -286,8 +286,10 @@ mod tests {
             .init_resource::<Time>()
             .add_systems(Update, player_movement);
 
-        // Start player at (380.0, 380.0), inside bounds (max is 386.0 with radius 14)
-        let start_pos = Vec2::new(380.0, 380.0);
+        let max_x = WORLD_BOUNDS_MAX.x - PLAYER_RADIUS;
+        let max_y = WORLD_BOUNDS_MAX.y - PLAYER_RADIUS;
+        // Start player near the boundary so movement reaches and clamps at max
+        let start_pos = Vec2::new(max_x - 6.0, max_y - 6.0);
         let player_entity = app
             .world_mut()
             .spawn((
