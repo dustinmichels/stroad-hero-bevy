@@ -1,10 +1,11 @@
 [tools]
 # Bevy's MSRV is "the latest stable Rust", so track latest stable rather than pinning.
 rust = "latest"
+oxfmt = "latest"
 
 [tasks.fmt]
-description = "Format Rust code across the workspace"
-run = "cargo fmt --all"
+description = "Format Rust and repository files (oxfmt) across the workspace"
+run = ["cargo fmt --all", "oxfmt"]
 
 [tasks.dev]
 description = "Run with Bevy dynamically linked (fast iterative rebuilds)"

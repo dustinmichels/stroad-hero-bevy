@@ -48,7 +48,7 @@ This document charts the roadmap from the initial 2D intersection prototype (`pl
      - _Immediate (2D Sprites / Pixel Art)_: Fast iteration with `Camera2d` and `Sprite`, zero 3D modeling overhead.
      - _Future Expansion (3D Presentation)_: Switch camera to `Camera3d` (isometric or perspective) and bind low-poly meshes or billboarded 2.5D sprites, leaving simulation logic 100% untouched.
      - _Chosen Direction_: isometric pixel art (`pics/ideas/idea.jpg`, refining `pics/ideas/01_isometric_pixel_art.png`). Asset pipeline, camera setup, and how the view binds to the sim are in `docs/isometric-view.md`.
-- **Web Budget**: Target is < 15 MB uncompressed wasm (ideally < 10 MB per `docs/web-plan.md`). A 2D simulation layer easily accommodates either visual target while staying within web constraints.
+- **Web Budget**: Target is < 15 MB uncompressed wasm (ideally < 10 MB per `docs/3d-view-plan.md`). A 2D simulation layer easily accommodates either visual target while staying within web constraints.
 
 ---
 
@@ -131,9 +131,9 @@ Build auditory feedback reinforcing the stress and absurdity of stroad design.
   - [ ] Dialogue soundbites or text prompts from Mats's mother with Dutch accent / phrasing.
   - [ ] Satirical jingles upon entering parody store locations.
 
-### Phase 6: Web Build & Distribution (`docs/web-plan.md`)
+### Phase 6: Web Build & Distribution (`docs/3d-view-plan.md`)
 
-Execute the steps in `docs/web-plan.md` to ensure immediate browser playability.
+Execute the web build and distribution steps unified in `docs/3d-view-plan.md` to ensure browser playability and static hosting deployment.
 
 - [ ] Complete toolchain setup (`trunk`, `wasm32-unknown-unknown`, `wasm-opt`).
 - [ ] Configure `index.html` canvas binding and responsive parent container.

@@ -1,5 +1,11 @@
 .codegraph
 pics/ideas
+dist/
+art/
+*.zip
+
+# ENV
+.env
 
 ### macOS ###
 # General

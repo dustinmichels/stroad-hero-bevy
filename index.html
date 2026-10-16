@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Stroad Hero</title>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        display: grid;
+        place-items: center;
+      }
+      #game {
+        outline: none; /* Bevy focuses the canvas; hide the browser focus ring */
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+  </body>
+</html>

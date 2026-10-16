@@ -88,8 +88,7 @@ mod tests {
     #[test]
     fn test_spd_ui_spawn() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .add_plugins(SpdPlugin);
+        app.add_plugins(MinimalPlugins).add_plugins(SpdPlugin);
         app.update();
 
         assert!(app.world().contains_resource::<Spd>());
@@ -101,8 +100,7 @@ mod tests {
     #[test]
     fn test_spd_ui_update_on_resource_change() {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .add_plugins(SpdPlugin);
+        app.add_plugins(MinimalPlugins).add_plugins(SpdPlugin);
         app.update();
 
         // Increment SPD

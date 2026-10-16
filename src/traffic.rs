@@ -4,8 +4,8 @@ use bevy::prelude::*;
 
 use crate::constants::*;
 use crate::road::RoadGeometry;
+use crate::sim::{GroundPos, Heading};
 use crate::state::AppState;
-
 /// Default vehicle colors for visual variety
 pub const CAR_COLORS: [Color; 5] = [
     Color::srgb(0.85, 0.22, 0.22), // Crimson Red
@@ -55,11 +55,18 @@ impl TrafficLane {
         }
     }
 
-    /// Car bounding box dimensions (width along X, height along Y)
+    /// Car bounding box dimensions (length along heading, width perpendicular to heading)
     pub fn car_dimensions(&self) -> Vec2 {
+        Vec2::new(CAR_LENGTH, CAR_WIDTH)
+    }
+
+    /// Initial spawn heading for a vehicle entering this lane
+    pub fn spawn_heading(&self) -> Heading {
         match self {
-            TrafficLane::Eastbound | TrafficLane::Westbound => Vec2::new(CAR_LENGTH, CAR_WIDTH),
-            TrafficLane::Southbound | TrafficLane::Northbound => Vec2::new(CAR_WIDTH, CAR_LENGTH),
+            TrafficLane::Eastbound => Heading::ZERO,
+            TrafficLane::Westbound => Heading::new(-std::f32::consts::FRAC_PI_2),
+            TrafficLane::Southbound => Heading::new(-std::f32::consts::FRAC_PI_2),
+            TrafficLane::Northbound => Heading::new(std::f32::consts::FRAC_PI_2),
         }
     }
 }
@@ -71,21 +78,21 @@ pub struct Car {
     pub speed: f32,
     /// Fixed or current unit direction vector
     pub direction: Vec2,
-    /// Bounding box width along the X-axis
+    /// Bounding box length along heading
+    pub length: f32,
+    /// Bounding box width perpendicular to heading
     pub width: f32,
-    /// Bounding box height along the Y-axis
-    pub height: f32,
     /// Assigned traffic lane, if spawned via traffic system
     pub lane: Option<TrafficLane>,
 }
 
 impl Car {
-    pub fn new(speed: f32, direction: Vec2, width: f32, height: f32) -> Self {
+    pub fn new(speed: f32, direction: Vec2, length: f32, width: f32) -> Self {
         Self {
             speed,
             direction: direction.normalize_or_zero(),
+            length,
             width,
-            height,
             lane: None,
         }
     }
@@ -96,11 +103,11 @@ impl Car {
     }
 
     pub fn dimensions(&self) -> Vec2 {
-        Vec2::new(self.width, self.height)
+        Vec2::new(self.length, self.width)
     }
 
     pub fn half_extents(&self) -> Vec2 {
-        Vec2::new(self.width / 2.0, self.height / 2.0)
+        Vec2::new(self.length / 2.0, self.width / 2.0)
     }
 }
 
@@ -189,16 +196,16 @@ pub fn spawn_car_in_lane(
     let color = CAR_COLORS[color_index % CAR_COLORS.len()];
     let material = materials.add(ColorMaterial::from_color(color));
 
-    let rotation = match lane {
-        TrafficLane::Westbound => Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
-        _ => Quat::IDENTITY,
-    };
+    let heading = lane.spawn_heading();
+    let rotation = Quat::from_rotation_z(heading.0);
 
     commands
         .spawn((
             Mesh2d(mesh),
             MeshMaterial2d(material),
             Transform::from_translation(spawn_pos).with_rotation(rotation),
+            GroundPos(spawn_pos.truncate()),
+            heading,
             car,
         ))
         .id()
@@ -230,7 +237,7 @@ pub fn spawn_cars(
 pub fn car_movement(
     time: Res<Time>,
     road_geom: Option<Res<RoadGeometry>>,
-    mut query: Query<(&mut Car, &mut Transform)>,
+    mut query: Query<(&mut Car, &mut GroundPos, &mut Heading)>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -248,26 +255,26 @@ pub fn car_movement(
     let south_lane_x = geom.south_lane_x();
     let north_lane_x = geom.north_lane_x();
 
-    for (mut car, mut transform) in &mut query {
+    for (mut car, mut ground_pos, mut heading) in &mut query {
         match car.lane {
             Some(TrafficLane::Eastbound) => {
-                let pos = transform.translation.truncate();
+                let pos = ground_pos.0;
                 if pos.x < curve_start_x {
                     // Straight horizontal segment heading East
                     let next_x = pos.x + car.speed * dt;
                     if next_x < curve_start_x {
-                        transform.translation.x = next_x;
-                        transform.translation.y = east_lane_y;
+                        ground_pos.x = next_x;
+                        ground_pos.y = east_lane_y;
                         car.direction = Vec2::X;
-                        transform.rotation = Quat::IDENTITY;
+                        heading.0 = 0.0;
                     } else {
                         // Transitions into curve
                         let excess_s = next_x - curve_start_x;
                         let theta = excess_s / r_east;
-                        transform.translation.x = curve_start_x + r_east * theta.sin();
-                        transform.translation.y = curve_center.y - r_east * theta.cos();
+                        ground_pos.x = curve_start_x + r_east * theta.sin();
+                        ground_pos.y = curve_center.y - r_east * theta.cos();
                         car.direction = Vec2::new(theta.cos(), theta.sin());
-                        transform.rotation = Quat::from_rotation_z(theta);
+                        heading.0 = theta;
                     }
                 } else if pos.y < curve_center.y {
                     // On the curve heading towards the top exit
@@ -276,44 +283,44 @@ pub fn car_movement(
                     let next_theta = current_theta + d_theta;
 
                     if next_theta < std::f32::consts::FRAC_PI_2 {
-                        transform.translation.x = curve_start_x + r_east * next_theta.sin();
-                        transform.translation.y = curve_center.y - r_east * next_theta.cos();
+                        ground_pos.x = curve_start_x + r_east * next_theta.sin();
+                        ground_pos.y = curve_center.y - r_east * next_theta.cos();
                         car.direction = Vec2::new(next_theta.cos(), next_theta.sin());
-                        transform.rotation = Quat::from_rotation_z(next_theta);
+                        heading.0 = next_theta;
                     } else {
                         // Exits curve to the North
                         let excess_s = (next_theta - std::f32::consts::FRAC_PI_2) * r_east;
-                        transform.translation.x = curve_start_x + r_east;
-                        transform.translation.y = curve_center.y + excess_s;
+                        ground_pos.x = curve_start_x + r_east;
+                        ground_pos.y = curve_center.y + excess_s;
                         car.direction = Vec2::Y;
-                        transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                        heading.0 = std::f32::consts::FRAC_PI_2;
                     }
                 } else {
                     // Past the curve heading straight North
-                    transform.translation.y += car.speed * dt;
-                    transform.translation.x = curve_start_x + r_east;
+                    ground_pos.y += car.speed * dt;
+                    ground_pos.x = curve_start_x + r_east;
                     car.direction = Vec2::Y;
-                    transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                    heading.0 = std::f32::consts::FRAC_PI_2;
                 }
             }
             Some(TrafficLane::Westbound) => {
-                let pos = transform.translation.truncate();
+                let pos = ground_pos.0;
                 if pos.y > curve_center.y {
                     // Straight vertical segment heading South into the curve
                     let next_y = pos.y - car.speed * dt;
                     if next_y > curve_center.y {
-                        transform.translation.y = next_y;
-                        transform.translation.x = curve_start_x + r_west;
+                        ground_pos.y = next_y;
+                        ground_pos.x = curve_start_x + r_west;
                         car.direction = -Vec2::Y;
-                        transform.rotation = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+                        heading.0 = -std::f32::consts::FRAC_PI_2;
                     } else {
                         // Transitions into curve
                         let excess_s = curve_center.y - next_y;
                         let theta = std::f32::consts::FRAC_PI_2 - (excess_s / r_west);
-                        transform.translation.x = curve_start_x + r_west * theta.sin();
-                        transform.translation.y = curve_center.y - r_west * theta.cos();
+                        ground_pos.x = curve_start_x + r_west * theta.sin();
+                        ground_pos.y = curve_center.y - r_west * theta.cos();
                         car.direction = Vec2::new(-theta.cos(), -theta.sin());
-                        transform.rotation = Quat::from_rotation_z(theta - std::f32::consts::PI);
+                        heading.0 = theta - std::f32::consts::PI;
                     }
                 } else if pos.x > curve_start_x {
                     // On the curve moving towards theta = 0
@@ -322,49 +329,51 @@ pub fn car_movement(
                     let next_theta = current_theta - d_theta;
 
                     if next_theta > 0.0 {
-                        transform.translation.x = curve_start_x + r_west * next_theta.sin();
-                        transform.translation.y = curve_center.y - r_west * next_theta.cos();
+                        ground_pos.x = curve_start_x + r_west * next_theta.sin();
+                        ground_pos.y = curve_center.y - r_west * next_theta.cos();
                         car.direction = Vec2::new(-next_theta.cos(), -next_theta.sin());
-                        transform.rotation = Quat::from_rotation_z(next_theta - std::f32::consts::PI);
+                        heading.0 = next_theta - std::f32::consts::PI;
                     } else {
                         // Exits curve to the West
                         let excess_s = (-next_theta) * r_west;
-                        transform.translation.x = curve_start_x - excess_s;
-                        transform.translation.y = west_lane_y;
+                        ground_pos.x = curve_start_x - excess_s;
+                        ground_pos.y = west_lane_y;
                         car.direction = -Vec2::X;
-                        transform.rotation = Quat::from_rotation_z(std::f32::consts::PI);
+                        heading.0 = std::f32::consts::PI;
                     }
                 } else {
                     // Straight horizontal segment heading West
-                    transform.translation.x -= car.speed * dt;
-                    transform.translation.y = west_lane_y;
+                    ground_pos.x -= car.speed * dt;
+                    ground_pos.y = west_lane_y;
                     car.direction = -Vec2::X;
-                    transform.rotation = Quat::from_rotation_z(std::f32::consts::PI);
+                    heading.0 = std::f32::consts::PI;
                 }
             }
             Some(TrafficLane::Southbound) => {
-                transform.translation.y -= car.speed * dt;
-                transform.translation.x = south_lane_x;
+                ground_pos.y -= car.speed * dt;
+                ground_pos.x = south_lane_x;
                 car.direction = -Vec2::Y;
+                heading.0 = -std::f32::consts::FRAC_PI_2;
             }
             Some(TrafficLane::Northbound) => {
-                transform.translation.y += car.speed * dt;
-                transform.translation.x = north_lane_x;
+                ground_pos.y += car.speed * dt;
+                ground_pos.x = north_lane_x;
                 car.direction = Vec2::Y;
+                heading.0 = std::f32::consts::FRAC_PI_2;
             }
             None => {
                 let delta = car.direction * car.speed * dt;
-                transform.translation.x += delta.x;
-                transform.translation.y += delta.y;
+                ground_pos.x += delta.x;
+                ground_pos.y += delta.y;
             }
         }
     }
 }
 
 /// System to despawn cars that have completely exited the opposite playfield boundary
-pub fn car_cleanup(mut commands: Commands, query: Query<(Entity, &Car, &Transform)>) {
-    for (entity, car, transform) in &query {
-        let pos = transform.translation.truncate();
+pub fn car_cleanup(mut commands: Commands, query: Query<(Entity, &Car, &GroundPos)>) {
+    for (entity, car, ground_pos) in &query {
+        let pos = ground_pos.0;
         if is_car_out_of_bounds(pos, car.direction) {
             commands.entity(entity).despawn();
         }
@@ -395,14 +404,14 @@ mod tests {
         let car_h = Car::new(240.0, Vec2::new(1.0, 0.0), 48.0, 26.0);
         assert_eq!(car_h.speed, 240.0);
         assert_eq!(car_h.direction, Vec2::new(1.0, 0.0));
-        assert_eq!(car_h.width, 48.0);
-        assert_eq!(car_h.height, 26.0);
+        assert_eq!(car_h.length, 48.0);
+        assert_eq!(car_h.width, 26.0);
         assert_eq!(car_h.dimensions(), Vec2::new(48.0, 26.0));
         assert_eq!(car_h.half_extents(), Vec2::new(24.0, 13.0));
 
-        let car_v = Car::new(240.0, Vec2::new(0.0, -1.0), 26.0, 48.0);
-        assert_eq!(car_v.dimensions(), Vec2::new(26.0, 48.0));
-        assert_eq!(car_v.half_extents(), Vec2::new(13.0, 24.0));
+        let car_v = Car::new(240.0, Vec2::new(0.0, -1.0), 48.0, 26.0);
+        assert_eq!(car_v.dimensions(), Vec2::new(48.0, 26.0));
+        assert_eq!(car_v.half_extents(), Vec2::new(24.0, 13.0));
     }
 
     #[test]
@@ -432,11 +441,11 @@ mod tests {
         );
         assert_eq!(
             TrafficLane::Southbound.car_dimensions(),
-            Vec2::new(CAR_WIDTH, CAR_LENGTH)
+            Vec2::new(CAR_LENGTH, CAR_WIDTH)
         );
         assert_eq!(
             TrafficLane::Northbound.car_dimensions(),
-            Vec2::new(CAR_WIDTH, CAR_LENGTH)
+            Vec2::new(CAR_LENGTH, CAR_WIDTH)
         );
     }
 
@@ -470,21 +479,48 @@ mod tests {
         let despawn_y = HALF_WORLD_HEIGHT + DESPAWN_MARGIN;
 
         // Eastbound (heading +X)
-        assert!(!is_car_out_of_bounds(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)));
-        assert!(!is_car_out_of_bounds(Vec2::new(despawn_x, 0.0), Vec2::new(1.0, 0.0)));
-        assert!(is_car_out_of_bounds(Vec2::new(despawn_x + 0.1, 0.0), Vec2::new(1.0, 0.0)));
+        assert!(!is_car_out_of_bounds(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0)
+        ));
+        assert!(!is_car_out_of_bounds(
+            Vec2::new(despawn_x, 0.0),
+            Vec2::new(1.0, 0.0)
+        ));
+        assert!(is_car_out_of_bounds(
+            Vec2::new(despawn_x + 0.1, 0.0),
+            Vec2::new(1.0, 0.0)
+        ));
 
         // Westbound (heading -X)
-        assert!(!is_car_out_of_bounds(Vec2::new(-despawn_x, 0.0), Vec2::new(-1.0, 0.0)));
-        assert!(is_car_out_of_bounds(Vec2::new(-despawn_x - 0.1, 0.0), Vec2::new(-1.0, 0.0)));
+        assert!(!is_car_out_of_bounds(
+            Vec2::new(-despawn_x, 0.0),
+            Vec2::new(-1.0, 0.0)
+        ));
+        assert!(is_car_out_of_bounds(
+            Vec2::new(-despawn_x - 0.1, 0.0),
+            Vec2::new(-1.0, 0.0)
+        ));
 
         // Northbound (heading +Y)
-        assert!(!is_car_out_of_bounds(Vec2::new(0.0, despawn_y), Vec2::new(0.0, 1.0)));
-        assert!(is_car_out_of_bounds(Vec2::new(0.0, despawn_y + 0.1), Vec2::new(0.0, 1.0)));
+        assert!(!is_car_out_of_bounds(
+            Vec2::new(0.0, despawn_y),
+            Vec2::new(0.0, 1.0)
+        ));
+        assert!(is_car_out_of_bounds(
+            Vec2::new(0.0, despawn_y + 0.1),
+            Vec2::new(0.0, 1.0)
+        ));
 
         // Southbound (heading -Y)
-        assert!(!is_car_out_of_bounds(Vec2::new(0.0, -despawn_y), Vec2::new(0.0, -1.0)));
-        assert!(is_car_out_of_bounds(Vec2::new(0.0, -despawn_y - 0.1), Vec2::new(0.0, -1.0)));
+        assert!(!is_car_out_of_bounds(
+            Vec2::new(0.0, -despawn_y),
+            Vec2::new(0.0, -1.0)
+        ));
+        assert!(is_car_out_of_bounds(
+            Vec2::new(0.0, -despawn_y - 0.1),
+            Vec2::new(0.0, -1.0)
+        ));
     }
 
     #[test]
@@ -496,7 +532,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::new(1.0, 0.0), 48.0, 26.0),
-                Transform::from_xyz(0.0, -30.0, Z_CAR),
+                GroundPos(Vec2::new(0.0, -30.0)),
+                Heading::ZERO,
             ))
             .id();
 
@@ -504,7 +541,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(100.0, Vec2::new(0.0, -1.0), 26.0, 48.0),
-                Transform::from_xyz(-30.0, 100.0, Z_CAR),
+                GroundPos(Vec2::new(-30.0, 100.0)),
+                Heading::ZERO,
             ))
             .id();
 
@@ -516,13 +554,13 @@ mod tests {
 
         app.update();
 
-        let trans_e = app.world().get::<Transform>(car_e).unwrap();
-        assert_eq!(trans_e.translation.x, 100.0); // 200 * 0.5
-        assert_eq!(trans_e.translation.y, -30.0);
+        let pos_e = app.world().get::<GroundPos>(car_e).unwrap();
+        assert_eq!(pos_e.x, 100.0); // 200 * 0.5
+        assert_eq!(pos_e.y, -30.0);
 
-        let trans_s = app.world().get::<Transform>(car_s).unwrap();
-        assert_eq!(trans_s.translation.x, -30.0);
-        assert_eq!(trans_s.translation.y, 50.0); // 100 - 100 * 0.5
+        let pos_s = app.world().get::<GroundPos>(car_s).unwrap();
+        assert_eq!(pos_s.x, -30.0);
+        assert_eq!(pos_s.y, 50.0); // 100 - 100 * 0.5
     }
 
     #[test]
@@ -535,7 +573,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::new(1.0, 0.0), 48.0, 26.0),
-                Transform::from_xyz(100.0, -30.0, Z_CAR),
+                GroundPos(Vec2::new(100.0, -30.0)),
             ))
             .id();
 
@@ -545,7 +583,7 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::new(1.0, 0.0), 48.0, 26.0),
-                Transform::from_xyz(despawn_x + 1.0, -30.0, Z_CAR),
+                GroundPos(Vec2::new(despawn_x + 1.0, -30.0)),
             ))
             .id();
 
@@ -554,8 +592,8 @@ mod tests {
         let car_dead_s = app
             .world_mut()
             .spawn((
-                Car::new(200.0, Vec2::new(0.0, -1.0), 26.0, 48.0),
-                Transform::from_xyz(-30.0, -despawn_y - 5.0, Z_CAR),
+                Car::new(200.0, Vec2::new(0.0, -1.0), 48.0, 26.0),
+                GroundPos(Vec2::new(-30.0, -despawn_y - 5.0)),
             ))
             .id();
         app.add_systems(Update, car_cleanup);
@@ -604,23 +642,74 @@ mod tests {
             .expect("Car component should exist");
         assert_eq!(car_ref.direction, Vec2::new(1.0, 0.0));
         assert_eq!(car_ref.speed, CAR_SPEED);
-        assert_eq!(car_ref.width, CAR_LENGTH);
-        assert_eq!(car_ref.height, CAR_WIDTH);
+        assert_eq!(car_ref.length, CAR_LENGTH);
+        assert_eq!(car_ref.width, CAR_WIDTH);
 
-        let transform = app
+        let ground_pos = app
             .world()
-            .get::<Transform>(car_id)
-            .expect("Transform should exist");
-        assert_eq!(transform.translation.z, Z_CAR);
-        assert_eq!(transform.translation.y, geom.east_lane_y());
-        assert_eq!(transform.translation.x, -HALF_WORLD_WIDTH - SPAWN_MARGIN);
+            .get::<GroundPos>(car_id)
+            .expect("GroundPos should exist");
+        assert_eq!(ground_pos.x, -HALF_WORLD_WIDTH - SPAWN_MARGIN);
+        assert_eq!(ground_pos.y, geom.east_lane_y());
 
+        let heading = app
+            .world()
+            .get::<Heading>(car_id)
+            .expect("Heading should exist");
+        assert_eq!(heading.0, 0.0);
         assert!(app.world().get::<Mesh2d>(car_id).is_some());
         assert!(
             app.world()
                 .get::<MeshMaterial2d<ColorMaterial>>(car_id)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn test_spawn_car_in_each_lane_heading_and_dimensions() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<RoadGeometry>();
+
+        let geom = RoadGeometry::default();
+
+        type SpawnCarState<'w, 's> = bevy::ecs::system::SystemState<(
+            Commands<'w, 's>,
+            ResMut<'w, Assets<Mesh>>,
+            ResMut<'w, Assets<ColorMaterial>>,
+        )>;
+
+        for lane in TrafficLane::ALL {
+            let car_id = {
+                let mut system_state = SpawnCarState::new(app.world_mut());
+                let (mut cmd, mut meshes, mut materials) =
+                    system_state.get_mut(app.world_mut()).unwrap();
+                let id = spawn_car_in_lane(&mut cmd, &mut meshes, &mut materials, &geom, lane, 0);
+                system_state.apply(app.world_mut());
+                id
+            };
+
+            let car = app.world().get::<Car>(car_id).unwrap();
+            assert_eq!(car.length, CAR_LENGTH);
+            assert_eq!(car.width, CAR_WIDTH);
+            assert_eq!(car.dimensions(), Vec2::new(CAR_LENGTH, CAR_WIDTH));
+            assert_eq!(
+                car.half_extents(),
+                Vec2::new(CAR_LENGTH / 2.0, CAR_WIDTH / 2.0)
+            );
+
+            let heading = app.world().get::<Heading>(car_id).unwrap();
+            assert_eq!(heading.0, lane.spawn_heading().0);
+
+            match lane {
+                TrafficLane::Eastbound => assert_eq!(heading.0, 0.0),
+                TrafficLane::Westbound => assert_eq!(heading.0, -std::f32::consts::FRAC_PI_2),
+                TrafficLane::Southbound => assert_eq!(heading.0, -std::f32::consts::FRAC_PI_2),
+                TrafficLane::Northbound => assert_eq!(heading.0, std::f32::consts::FRAC_PI_2),
+            }
+        }
     }
 
     #[test]
@@ -676,28 +765,35 @@ mod tests {
         for _ in 0..total_frames {
             app.update();
 
-            let mut car_query = app.world_mut().query::<(&Car, &Transform)>();
+            let mut car_query = app.world_mut().query::<(&Car, &GroundPos)>();
             let car_count = car_query.iter(app.world()).count();
             if car_count > max_active_cars {
                 max_active_cars = car_count;
             }
 
-            for (car, transform) in car_query.iter(app.world()) {
+            for (car, pos) in car_query.iter(app.world()) {
                 assert!((car.direction.length() - 1.0).abs() < 1e-4);
                 assert_eq!(car.speed, CAR_SPEED);
                 if let Some(lane) = car.lane {
                     observed_lanes.insert(lane);
                 }
 
-                let pos = transform.translation.truncate();
+                let pos = pos.0;
 
                 assert!(!is_car_out_of_bounds(pos, car.direction));
             }
         }
 
         assert_eq!(observed_lanes.len(), 4, "All 4 lanes should have spawned");
-        assert!(max_active_cars >= 2, "Cars should have been active concurrently");
-        assert!(max_active_cars <= 12, "Active cars should be bounded, got {}", max_active_cars);
+        assert!(
+            max_active_cars >= 2,
+            "Cars should have been active concurrently"
+        );
+        assert!(
+            max_active_cars <= 12,
+            "Active cars should be bounded, got {}",
+            max_active_cars
+        );
 
         // Pause spawning and run until all existing cars despawn to prove zero entity leakage
         {
@@ -711,7 +807,10 @@ mod tests {
         }
 
         let remaining_cars = app.world_mut().query::<&Car>().iter(app.world()).count();
-        assert_eq!(remaining_cars, 0, "All cars should have despawned cleanly without entity leakage");
+        assert_eq!(
+            remaining_cars, 0,
+            "All cars should have despawned cleanly without entity leakage"
+        );
     }
 
     #[test]
@@ -725,7 +824,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(200.0, Vec2::X, 48.0, 26.0).with_lane(TrafficLane::Eastbound),
-                Transform::from_xyz(150.0, -30.0, Z_CAR),
+                GroundPos(Vec2::new(150.0, -30.0)),
+                Heading::ZERO,
             ))
             .id();
 
@@ -734,10 +834,10 @@ mod tests {
         time.advance_by(std::time::Duration::from_millis(100));
         app.update();
 
-        let mut query = app.world_mut().query::<(&Car, &Transform)>();
-        let (car, transform) = query.get(app.world(), car_id).unwrap();
-        assert!(transform.translation.x >= 160.0);
-        assert!(transform.translation.y > -30.0);
+        let mut query = app.world_mut().query::<(&Car, &GroundPos)>();
+        let (car, pos) = query.get(app.world(), car_id).unwrap();
+        assert!(pos.x >= 160.0);
+        assert!(pos.y > -30.0);
         assert!(car.direction.y > 0.0);
     }
 
@@ -752,7 +852,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(200.0, -Vec2::Y, 48.0, 26.0).with_lane(TrafficLane::Westbound),
-                Transform::from_xyz(630.0, 510.0, Z_CAR),
+                GroundPos(Vec2::new(630.0, 510.0)),
+                Heading::new(-std::f32::consts::FRAC_PI_2),
             ))
             .id();
 
@@ -761,10 +862,10 @@ mod tests {
         time.advance_by(std::time::Duration::from_millis(100));
         app.update();
 
-        let mut query = app.world_mut().query::<(&Car, &Transform)>();
-        let (car, transform) = query.get(app.world(), car_id).unwrap();
-        assert!(transform.translation.y <= 500.0);
-        assert!(transform.translation.x < 630.0);
+        let mut query = app.world_mut().query::<(&Car, &GroundPos)>();
+        let (car, pos) = query.get(app.world(), car_id).unwrap();
+        assert!(pos.y <= 500.0);
+        assert!(pos.x < 630.0);
         assert!(car.direction.x < 0.0);
     }
 
@@ -782,7 +883,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(240.0, Vec2::X, 48.0, 26.0).with_lane(TrafficLane::Eastbound),
-                Transform::from_xyz(0.0, geom.east_lane_y(), Z_CAR),
+                GroundPos(Vec2::new(0.0, geom.east_lane_y())),
+                Heading::ZERO,
             ))
             .id();
 
@@ -791,8 +893,8 @@ mod tests {
             .world_mut()
             .spawn((
                 Car::new(240.0, -Vec2::Y, 48.0, 26.0).with_lane(TrafficLane::Westbound),
-                Transform::from_xyz(geom.curve_west_lane_x(), 560.0, Z_CAR)
-                    .with_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)),
+                GroundPos(Vec2::new(geom.curve_west_lane_x(), 560.0)),
+                Heading::new(-std::f32::consts::FRAC_PI_2),
             ))
             .id();
 
@@ -805,18 +907,18 @@ mod tests {
             app.update();
         }
 
-        let mut query = app.world_mut().query::<(&Car, &Transform)>();
+        let mut query = app.world_mut().query::<(&Car, &GroundPos)>();
 
         // Eastbound car has traversed curve and is now moving northbound at x = 690, y > 500
-        let (car_e_ref, trans_e) = query.get(app.world(), car_e).unwrap();
-        assert_eq!(trans_e.translation.x, geom.curve_east_lane_x());
-        assert!(trans_e.translation.y >= 500.0);
+        let (car_e_ref, pos_e) = query.get(app.world(), car_e).unwrap();
+        assert_eq!(pos_e.x, geom.curve_east_lane_x());
+        assert!(pos_e.y >= 500.0);
         assert_eq!(car_e_ref.direction, Vec2::Y);
 
         // Westbound car has traversed curve and is now moving westbound at x < 160, y = 30
-        let (car_w_ref, trans_w) = query.get(app.world(), car_w).unwrap();
-        assert!(trans_w.translation.x <= geom.curve_start_x);
-        assert_eq!(trans_w.translation.y, geom.west_lane_y());
+        let (car_w_ref, pos_w) = query.get(app.world(), car_w).unwrap();
+        assert!(pos_w.x <= geom.curve_start_x);
+        assert_eq!(pos_w.y, geom.west_lane_y());
         assert_eq!(car_w_ref.direction, -Vec2::X);
     }
 }

@@ -21,9 +21,9 @@ Consequence: a **3D scene rendered at low resolution and upscaled with nearest-n
 | **B. 3D low-res ("3D pixel art")** ✅ | `Camera3d` (ortho or narrow perspective) renders to a small texture (e.g. 320×320), upscaled ×2.5 with nearest sampling | Best: any angle, horizon, shadows           | Easy: `(x,y) → (x,0,-y)` | Free: just rotate the mesh        | Medium: low-poly models + small palette textures | Larger (`3d` feature)   |
 | **C. Hybrid 2.5D**                    | B for world/cars/buildings; Mats and pedestrians as camera-facing pixel sprites (billboards)                            | Best for characters (crisp hand-drawn Mats) | Same as B                | Free for cars                     | Medium                                           | Same as B               |
 
-**Decision: B now, grow into C.** Cars, roads, poles, and buildings as low-poly 3D; Mats as a billboarded pixel sprite once there's a sprite sheet (a capsule mesh until then). Approach A is the fallback if the wasm budget in `docs/web-plan.md` can't absorb the `3d` feature.
+**Decision: B now, grow into C.** Cars, roads, poles, and buildings as low-poly 3D; Mats as a billboarded pixel sprite once there's a sprite sheet (a capsule mesh until then). Approach A is the fallback if the wasm budget in `docs/3d-view-plan.md` can't absorb the `3d` feature.
 
-Risk: `web-plan.md` already records a 29.4 MB baseline against a < 15 MB budget. Adding 3D rendering makes that budget harder. Measure after the spike (§5) before committing; if it blows up, A is the escape hatch, and the sim refactor (§3) is needed by both.
+Risk: `docs/3d-view-plan.md` already records a 29.4 MB baseline against a < 15 MB budget. Adding 3D rendering makes that budget harder. Measure after the spike (§5) before committing; if it blows up, A is the escape hatch, and the sim refactor (§3) is needed by both.
 
 ## 2. Making assets
 
@@ -71,7 +71,7 @@ no text, transparent background, game asset
 5. Buildings: strip-mall block with swappable facades (_Walgroins_, _Taco Hell_, _Depot Depot_), parking-lot stripes.
 6. HUD: heart, errand card (Bevy UI, 9-slice pixel frame).
 
-Put assets under `assets/` (loaded via `AssetServer`; `web-plan.md` §2 notes adding the Trunk `copy-dir` line when it exists). Commit source files (`.blend`, `.aseprite`) under `art/` so exports can be regenerated.
+Put assets under `assets/` (loaded via `AssetServer`; `docs/3d-view-plan.md` Phase 10 notes adding the Trunk `copy-dir` line when it exists). Commit source files (`.blend`, `.aseprite`) under `art/` so exports can be regenerated.
 
 ## 3. Linking the view to the 2D model
 
@@ -151,5 +151,5 @@ Keep this in the view plugin (as a resource `ScreenToGround(Mat2)` that `player_
 1. **Sim refactor** (masterplan Phase 1 prerequisite): add `GroundPos`/`Heading`, port movement/collision/restart, add `sync_2d`. Existing tests should pass with the position source swapped; game looks identical.
 2. **Iso spike:** enable Bevy `3d` rendering, `IsoViewPlugin` with Kenney road tiles + cars, Mats as a capsule, ortho camera at 30° pitch / 45° yaw, `F1` toggle. Arrow-key remap.
 3. **Low-res + palette:** render-to-texture at 320×320, nearest upscale, texel snapping.
-4. **Measure:** wasm size vs. `web-plan.md` budget, frame time in Chromium. Go/no-go on approach B vs. A.
+4. **Measure:** wasm size vs. `docs/3d-view-plan.md` budget, frame time in Chromium. Go/no-go on approach B vs. A.
 5. **Art pass:** style sheet → Mats sprite billboard → one hero storefront (Taco Hell) → custom pickup truck.

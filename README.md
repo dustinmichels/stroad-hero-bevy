@@ -23,10 +23,28 @@ Requires [mise](https://mise.jdx.dev) (installs latest stable Rust) and the
 ```sh
 mise run dev     # cargo run, Bevy dynamically linked (fast rebuilds)
 mise run build   # same, build only
-mise run fmt     # cargo fmt
+mise run fmt     # cargo fmt & oxfmt
 cargo run --release                  # optimized native build (statically linked)
-trunk build --release --cargo-profile wasm-release  # web build (see docs/web-plan.md)
+trunk build --release --cargo-profile wasm-release  # web build
 ```
+
+### Web & itch.io Packaging
+
+1. Build with relative URLs:
+   ```sh
+   trunk build --release --cargo-profile wasm-release --public-url ./
+   ```
+2. Package the `dist/` contents as a zip archive with `index.html` at the zip root:
+   ```sh
+   cd dist && zip -r ../stroad-hero-web.zip . && cd ..
+   ```
+3. Upload to [itch.io](https://itch.io) as an HTML game:
+   - Check **"This file will be played in the browser"**.
+   - Configure viewport dimensions to **800×800** (or matching canvas embed dimensions).
+   - (Optional) Automate uploads via Butler:
+     ```sh
+     butler push dist <user>/stroad-hero:web
+     ```
 
 ## Build configuration
 

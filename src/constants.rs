@@ -14,7 +14,6 @@ pub const WORLD_HEIGHT: f32 = 1000.0;
 pub const HALF_WORLD_WIDTH: f32 = WORLD_WIDTH / 2.0;
 pub const HALF_WORLD_HEIGHT: f32 = WORLD_HEIGHT / 2.0;
 
-
 pub const WORLD_BOUNDS_MIN: Vec2 = Vec2::new(-HALF_WORLD_WIDTH, -HALF_WORLD_HEIGHT);
 pub const WORLD_BOUNDS_MAX: Vec2 = Vec2::new(HALF_WORLD_WIDTH, HALF_WORLD_HEIGHT);
 
@@ -49,6 +48,12 @@ pub const CAR_WIDTH: f32 = 26.0;
 pub const CAR_SPAWN_INTERVAL_SECS: f32 = 1.2;
 pub const SPAWN_MARGIN: f32 = 60.0;
 pub const DESPAWN_MARGIN: f32 = 80.0;
+// 3D View Constants
+pub const PLAYER_HEIGHT_3D: f32 = 30.0;
+pub const CAR_HEIGHT_3D: f32 = 20.0;
+pub const CAMERA3D_PITCH: f32 = 50.0 * std::f32::consts::PI / 180.0;
+pub const CAMERA3D_DISTANCE: f32 = 850.0;
+pub const CAMERA3D_FOV: f32 = 45.0 * std::f32::consts::PI / 180.0;
 
 #[cfg(test)]
 mod tests {
@@ -75,20 +80,37 @@ mod tests {
     fn test_lane_and_road_geometry() {
         assert_eq!(ROAD_WIDTH, 120.0);
         assert_eq!(LANE_WIDTH, 60.0);
-        assert!(GRID_STEP_SIZE > 0.0);
+        const {
+            assert!(GRID_STEP_SIZE > 0.0);
+        }
     }
 
     #[test]
     fn test_z_ordering() {
-        assert!(Z_ROAD < Z_BLOOD_SPLAT);
-        assert!(Z_BLOOD_SPLAT < Z_CAR);
-        assert!(Z_CAR < Z_PLAYER);
+        const {
+            assert!(Z_ROAD < Z_BLOOD_SPLAT);
+            assert!(Z_BLOOD_SPLAT < Z_CAR);
+            assert!(Z_CAR < Z_PLAYER);
+        }
     }
 
     #[test]
     fn test_speeds_and_intervals() {
-        assert!(PLAYER_SPEED > 0.0);
-        assert!(CAR_SPEED > 0.0);
-        assert!(CAR_SPAWN_INTERVAL_SECS > 0.0);
+        const {
+            assert!(PLAYER_SPEED > 0.0);
+            assert!(CAR_SPEED > 0.0);
+            assert!(CAR_SPAWN_INTERVAL_SECS > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_3d_constants() {
+        const {
+            assert!(PLAYER_HEIGHT_3D > 0.0);
+            assert!(CAR_HEIGHT_3D > 0.0);
+            assert!(CAMERA3D_PITCH > 0.0 && CAMERA3D_PITCH < std::f32::consts::FRAC_PI_2);
+            assert!(CAMERA3D_DISTANCE > 0.0);
+            assert!(CAMERA3D_FOV > 0.0 && CAMERA3D_FOV < std::f32::consts::PI);
+        }
     }
 }

@@ -4,9 +4,11 @@ pub mod collision;
 pub mod constants;
 pub mod player;
 pub mod road;
+pub mod sim;
 pub mod spd;
 pub mod state;
 pub mod traffic;
+pub mod view3d;
 use constants::*;
 use state::AppState;
 
@@ -21,6 +23,7 @@ pub fn build_app() -> App {
             title: "Stroad Hero".into(),
             resolution: WindowResolution::new(WINDOW_WIDTH as u32, WINDOW_HEIGHT as u32),
             resizable: false,
+            canvas: Some("#game".into()),
             ..default()
         }),
         ..default()
@@ -31,8 +34,19 @@ pub fn build_app() -> App {
     .add_plugins(traffic::TrafficPlugin)
     .add_plugins(collision::CollisionPlugin)
     .add_plugins(spd::SpdPlugin)
+    .add_plugins(view3d::View3dPlugin)
     .add_systems(Startup, setup_camera)
-    .add_systems(Update, camera_follow_player.after(player::player_movement));
+    .add_systems(
+        Update,
+        (
+            sync_2d
+                .after(player::player_movement)
+                .after(traffic::car_movement)
+                .after(collision::collision_detection)
+                .after(collision::restart_game),
+            camera_follow_player.after(sync_2d),
+        ),
+    );
     app
 }
 
@@ -73,6 +87,18 @@ pub fn camera_follow_player(
 
     camera_transform.translation.x = target_x;
     camera_transform.translation.y = target_y;
+}
+
+/// Temporary bridge system that syncs 2D Transform from GroundPos and Heading for existing meshes.
+/// Section 7 of the 3D plan deletes this once 3D rendering owns transforms.
+pub fn sync_2d(mut query: Query<(&sim::GroundPos, Option<&sim::Heading>, &mut Transform)>) {
+    for (ground_pos, heading, mut transform) in &mut query {
+        transform.translation.x = ground_pos.x;
+        transform.translation.y = ground_pos.y;
+        if let Some(heading) = heading {
+            transform.rotation = Quat::from_rotation_z(heading.0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -236,7 +262,17 @@ mod tests {
             .add_plugins(collision::CollisionPlugin)
             .add_plugins(spd::SpdPlugin)
             .add_systems(Startup, setup_camera)
-            .add_systems(Update, camera_follow_player.after(player::player_movement));
+            .add_systems(
+                Update,
+                (
+                    sync_2d
+                        .after(player::player_movement)
+                        .after(traffic::car_movement)
+                        .after(collision::collision_detection)
+                        .after(collision::restart_game),
+                    camera_follow_player.after(sync_2d),
+                ),
+            );
         app.update();
 
         assert!(app.world().contains_resource::<spd::Spd>());
@@ -245,14 +281,24 @@ mod tests {
         assert!(app.world().contains_resource::<ButtonInput<KeyCode>>());
 
         // Player starts at spawn
-        let mut p_query = app.world_mut().query::<(&player::Player, &Transform)>();
-        let (_, p_trans) = p_query.iter(app.world()).next().unwrap();
-        assert_eq!(p_trans.translation.truncate(), PLAYER_SPAWN_POS);
+        let mut p_query = app
+            .world_mut()
+            .query::<(&player::Player, &sim::GroundPos)>();
+        let (_, p_pos) = p_query.iter(app.world()).next().unwrap();
+        assert_eq!(p_pos.0, PLAYER_SPAWN_POS);
 
         // Move player towards off-screen curved road section (e.g. x = 400.0, y = 200.0)
-        let player_entity = app.world_mut().query_filtered::<Entity, With<player::Player>>().iter(app.world()).next().unwrap();
-        let mut p_trans = app.world_mut().get_mut::<Transform>(player_entity).unwrap();
-        p_trans.translation = Vec3::new(400.0, 200.0, Z_PLAYER);
+        let player_entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<player::Player>>()
+            .iter(app.world())
+            .next()
+            .unwrap();
+        let mut p_pos = app
+            .world_mut()
+            .get_mut::<sim::GroundPos>(player_entity)
+            .unwrap();
+        p_pos.0 = Vec2::new(400.0, 200.0);
 
         app.update();
 
@@ -261,5 +307,44 @@ mod tests {
         let (_, cam_trans) = cam_query.iter(app.world()).next().unwrap();
         assert_eq!(cam_trans.translation.x, 400.0);
         assert_eq!(cam_trans.translation.y, 100.0); // clamped to max_cam_y = 100.0
-}
+    }
+
+    #[test]
+    fn test_sync_2d_updates_transform() {
+        let mut app = App::new();
+        app.add_systems(Update, sync_2d);
+
+        let entity_with_heading = app
+            .world_mut()
+            .spawn((
+                sim::GroundPos::new(120.0, -45.0),
+                sim::Heading::new(std::f32::consts::FRAC_PI_2),
+                Transform::from_xyz(0.0, 0.0, Z_CAR),
+            ))
+            .id();
+
+        let entity_without_heading = app
+            .world_mut()
+            .spawn((
+                sim::GroundPos::new(30.0, 60.0),
+                Transform::from_xyz(0.0, 0.0, Z_BLOOD_SPLAT),
+            ))
+            .id();
+
+        app.update();
+
+        let t1 = app.world().get::<Transform>(entity_with_heading).unwrap();
+        assert_eq!(t1.translation, Vec3::new(120.0, -45.0, Z_CAR));
+        assert_eq!(
+            t1.rotation,
+            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
+        );
+
+        let t2 = app
+            .world()
+            .get::<Transform>(entity_without_heading)
+            .unwrap();
+        assert_eq!(t2.translation, Vec3::new(30.0, 60.0, Z_BLOOD_SPLAT));
+        assert_eq!(t2.rotation, Quat::IDENTITY);
+    }
 }

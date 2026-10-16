@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
 use crate::constants::*;
+use crate::sim::{GroundPos, Heading};
 use crate::state::AppState;
-
 /// Distinct bright color for the player circle
 pub const COLOR_PLAYER: Color = Color::srgb(0.2, 0.85, 0.35);
 
@@ -64,6 +64,8 @@ pub fn setup_player(
         Mesh2d(circle),
         MeshMaterial2d(material),
         Transform::from_xyz(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER),
+        GroundPos(PLAYER_SPAWN_POS),
+        Heading::ZERO,
         Player::default(),
     ));
 }
@@ -72,7 +74,7 @@ pub fn setup_player(
 pub fn player_movement(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut query: Query<(&Player, &mut Transform)>,
+    mut query: Query<(&Player, &mut GroundPos)>,
 ) {
     let mut direction = Vec2::ZERO;
 
@@ -91,17 +93,14 @@ pub fn player_movement(
 
     let move_direction = direction.normalize_or_zero();
 
-    for (player, mut transform) in &mut query {
+    for (player, mut ground_pos) in &mut query {
         if !player.alive {
             continue;
         }
 
         let delta = move_direction * player.speed * time.delta_secs();
-        let new_pos = transform.translation.truncate() + delta;
-        let clamped = clamp_position(new_pos, player.radius);
-
-        transform.translation.x = clamped.x;
-        transform.translation.y = clamped.y;
+        let new_pos = ground_pos.0 + delta;
+        ground_pos.0 = clamp_position(new_pos, player.radius);
     }
 }
 
@@ -193,20 +192,28 @@ mod tests {
 
         app.update();
 
-        let mut query =
-            app.world_mut()
-                .query::<(&Player, &Transform, &Mesh2d, &MeshMaterial2d<ColorMaterial>)>();
-        let players: Vec<(&Player, &Transform, &Mesh2d, &MeshMaterial2d<ColorMaterial>)> =
-            query.iter(app.world()).collect();
+        let mut query = app.world_mut().query::<(
+            &Player,
+            &GroundPos,
+            &Heading,
+            &Mesh2d,
+            &MeshMaterial2d<ColorMaterial>,
+        )>();
+        let players: Vec<(
+            &Player,
+            &GroundPos,
+            &Heading,
+            &Mesh2d,
+            &MeshMaterial2d<ColorMaterial>,
+        )> = query.iter(app.world()).collect();
 
         assert_eq!(players.len(), 1, "Exactly one player should be spawned");
-        let (player, transform, _mesh, _mat) = players[0];
+        let (player, ground_pos, heading, _mesh, _mat) = players[0];
         assert_eq!(player.radius, PLAYER_RADIUS);
         assert_eq!(player.speed, PLAYER_SPEED);
         assert!(player.is_alive());
-        assert_eq!(transform.translation.x, PLAYER_SPAWN_POS.x);
-        assert_eq!(transform.translation.y, PLAYER_SPAWN_POS.y);
-        assert_eq!(transform.translation.z, Z_PLAYER);
+        assert_eq!(ground_pos.0, PLAYER_SPAWN_POS);
+        assert_eq!(heading.0, 0.0);
     }
 
     #[test]
@@ -220,17 +227,13 @@ mod tests {
         let start_pos = Vec2::new(0.0, 0.0);
         let player_entity = app
             .world_mut()
-            .spawn((
-                Player::default(),
-                Transform::from_xyz(start_pos.x, start_pos.y, Z_PLAYER),
-            ))
+            .spawn((Player::default(), GroundPos(start_pos)))
             .id();
 
         // 1. No input -> position unchanged
         app.update();
-        let transform = app.world().get::<Transform>(player_entity).unwrap();
-        assert_eq!(transform.translation.truncate(), start_pos);
-
+        let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
+        assert_eq!(ground_pos.0, start_pos);
         // 2. Press ArrowUp
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(KeyCode::ArrowUp);
@@ -243,18 +246,16 @@ mod tests {
         app.update();
 
         let current_pos = {
-            let transform = app.world().get::<Transform>(player_entity).unwrap();
+            let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
             let expected_y = start_pos.y + PLAYER_SPEED * dt;
             assert!(
-                (transform.translation.y - expected_y).abs() < 1e-4,
+                (ground_pos.y - expected_y).abs() < 1e-4,
                 "Player y should move up by speed * dt: expected {expected_y}, got {}",
-                transform.translation.y
+                ground_pos.y
             );
-            assert_eq!(transform.translation.x, start_pos.x);
-            transform.translation.truncate()
+            assert_eq!(ground_pos.x, start_pos.x);
+            ground_pos.0
         };
-
-        // 3. Diagonal movement with ArrowRight and ArrowDown
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.reset_all();
         keys.press(KeyCode::ArrowRight);
@@ -264,11 +265,10 @@ mod tests {
 
         app.update();
 
-        let transform = app.world().get::<Transform>(player_entity).unwrap();
+        let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
         let expected_dir = Vec2::new(1.0, -1.0).normalize();
         let expected_delta = expected_dir * PLAYER_SPEED * dt;
-        let actual_delta = transform.translation.truncate() - current_pos;
-
+        let actual_delta = ground_pos.0 - current_pos;
         assert!(
             (actual_delta.x - expected_delta.x).abs() < 1e-4,
             "Diagonal movement X mismatch"
@@ -292,12 +292,8 @@ mod tests {
         let start_pos = Vec2::new(max_x - 6.0, max_y - 6.0);
         let player_entity = app
             .world_mut()
-            .spawn((
-                Player::default(),
-                Transform::from_xyz(start_pos.x, start_pos.y, Z_PLAYER),
-            ))
+            .spawn((Player::default(), GroundPos(start_pos)))
             .id();
-
         let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
         keys.press(KeyCode::ArrowUp);
         keys.press(KeyCode::ArrowRight);
@@ -308,12 +304,12 @@ mod tests {
 
         app.update();
 
-        let transform = app.world().get::<Transform>(player_entity).unwrap();
+        let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
         let max_x = WORLD_BOUNDS_MAX.x - PLAYER_RADIUS;
         let max_y = WORLD_BOUNDS_MAX.y - PLAYER_RADIUS;
 
-        assert_eq!(transform.translation.x, max_x);
-        assert_eq!(transform.translation.y, max_y);
+        assert_eq!(ground_pos.x, max_x);
+        assert_eq!(ground_pos.y, max_y);
     }
 
     #[test]
@@ -332,7 +328,7 @@ mod tests {
                     speed: PLAYER_SPEED,
                     alive: false,
                 },
-                Transform::from_xyz(start_pos.x, start_pos.y, Z_PLAYER),
+                GroundPos(start_pos),
             ))
             .id();
 
@@ -344,8 +340,8 @@ mod tests {
 
         app.update();
 
-        let transform = app.world().get::<Transform>(player_entity).unwrap();
-        assert_eq!(transform.translation.truncate(), start_pos);
+        let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
+        assert_eq!(ground_pos.0, start_pos);
     }
 
     #[test]
@@ -358,12 +354,8 @@ mod tests {
         let start_pos = Vec2::new(0.0, 0.0);
         let player_entity = app
             .world_mut()
-            .spawn((
-                Player::default(),
-                Transform::from_xyz(start_pos.x, start_pos.y, Z_PLAYER),
-            ))
+            .spawn((Player::default(), GroundPos(start_pos)))
             .id();
-
         let dt = 0.1;
         let step = PLAYER_SPEED * dt;
 
@@ -376,9 +368,8 @@ mod tests {
 
         for (key, expected_delta) in directions {
             // Reset position to center
-            let mut transform = app.world_mut().get_mut::<Transform>(player_entity).unwrap();
-            transform.translation = Vec3::new(start_pos.x, start_pos.y, Z_PLAYER);
-
+            let mut ground_pos = app.world_mut().get_mut::<GroundPos>(player_entity).unwrap();
+            ground_pos.0 = start_pos;
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.reset_all();
             keys.press(key);
@@ -388,17 +379,21 @@ mod tests {
 
             app.update();
 
-            let transform = app.world().get::<Transform>(player_entity).unwrap();
-            let actual_delta = transform.translation.truncate() - start_pos;
+            let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
+            let actual_delta = ground_pos.0 - start_pos;
             assert!(
                 (actual_delta.x - expected_delta.x).abs() < 1e-4,
                 "Key {:?} X mismatch: expected {}, got {}",
-                key, expected_delta.x, actual_delta.x
+                key,
+                expected_delta.x,
+                actual_delta.x
             );
             assert!(
                 (actual_delta.y - expected_delta.y).abs() < 1e-4,
                 "Key {:?} Y mismatch: expected {}, got {}",
-                key, expected_delta.y, actual_delta.y
+                key,
+                expected_delta.y,
+                actual_delta.y
             );
         }
     }
@@ -412,12 +407,8 @@ mod tests {
 
         let player_entity = app
             .world_mut()
-            .spawn((
-                Player::default(),
-                Transform::from_xyz(0.0, 0.0, Z_PLAYER),
-            ))
+            .spawn((Player::default(), GroundPos(Vec2::ZERO)))
             .id();
-
         let max_x = WORLD_BOUNDS_MAX.x - PLAYER_RADIUS;
         let min_x = WORLD_BOUNDS_MIN.x + PLAYER_RADIUS;
         let max_y = WORLD_BOUNDS_MAX.y - PLAYER_RADIUS;
@@ -432,8 +423,8 @@ mod tests {
 
         for (key, expected_coord, is_x) in boundaries {
             // Place player close to the edge
-            let mut transform = app.world_mut().get_mut::<Transform>(player_entity).unwrap();
-            transform.translation = Vec3::new(0.0, 0.0, Z_PLAYER);
+            let mut ground_pos = app.world_mut().get_mut::<GroundPos>(player_entity).unwrap();
+            ground_pos.0 = Vec2::ZERO;
 
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.reset_all();
@@ -445,11 +436,19 @@ mod tests {
 
             app.update();
 
-            let transform = app.world().get::<Transform>(player_entity).unwrap();
+            let ground_pos = app.world().get::<GroundPos>(player_entity).unwrap();
             if is_x {
-                assert_eq!(transform.translation.x, expected_coord, "Boundary clamping X failed for {:?}", key);
+                assert_eq!(
+                    ground_pos.x, expected_coord,
+                    "Boundary clamping X failed for {:?}",
+                    key
+                );
             } else {
-                assert_eq!(transform.translation.y, expected_coord, "Boundary clamping Y failed for {:?}", key);
+                assert_eq!(
+                    ground_pos.y, expected_coord,
+                    "Boundary clamping Y failed for {:?}",
+                    key
+                );
             }
         }
     }

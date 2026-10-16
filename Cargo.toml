@@ -42,7 +42,7 @@ codegen-units = 1
 lto = "thin"
 
 # Optimize for size in the wasm-release profile to reduce load times and bandwidth usage on web.
-# Use with `--profile wasm-release` instead of `--release` (see docs/web-plan.md).
+# Use with `--profile wasm-release` instead of `--release` (see docs/3d-view-plan.md).
 [profile.wasm-release]
 # Default to release profile values.
 inherits = "release"
