@@ -48,7 +48,7 @@ This document charts the roadmap from the initial 2D intersection prototype (`pl
      - _Immediate (2D Sprites / Pixel Art)_: Fast iteration with `Camera2d` and `Sprite`, zero 3D modeling overhead.
      - _Future Expansion (3D Presentation)_: Switch camera to `Camera3d` (isometric or perspective) and bind low-poly meshes or billboarded 2.5D sprites, leaving simulation logic 100% untouched.
      - _Chosen Direction_: isometric pixel art (`pics/ideas/idea.jpg`, refining `pics/ideas/01_isometric_pixel_art.png`). Asset pipeline, camera setup, and how the view binds to the sim are in `docs/isometric-view.md`.
-- **Web Budget**: Target is < 15 MB uncompressed wasm (ideally < 10 MB per `docs/3d-view-plan.md`). A 2D simulation layer easily accommodates either visual target while staying within web constraints.
+- **Web Budget**: Target is < 15 MB uncompressed wasm (ideally < 10 MB per `plans/3d-plan.md`). A 2D simulation layer easily accommodates either visual target while staying within web constraints.
 
 ---
 
@@ -58,10 +58,10 @@ This document charts the roadmap from the initial 2D intersection prototype (`pl
 
 Transform the tech demo into an objective-driven game with win/loss states, decoupling position logic for future 3D visual support.
 
-- [ ] **Prerequisite: Simulation Position Decoupling**:
-  - [ ] Introduce `GroundPos(pub Vec2)` and `Heading(pub f32)` components for player and vehicles.
-  - [ ] Refactor `player_movement`, `car_movement`, `car_cleanup`, and `check_collisions` to operate on `GroundPos` instead of `Transform`.
-  - [ ] Add `sync_transforms_2d` system to project `GroundPos` into `Transform.translation.xy` at proper $Z$ layers.
+- [x] **Prerequisite: Simulation Position Decoupling**:
+  - [x] Introduce `GroundPos(pub Vec2)` and `Heading(pub f32)` components for player and vehicles.
+  - [x] Refactor `player_movement`, `car_movement`, `car_cleanup`, and `check_collisions` to operate on `GroundPos` instead of `Transform`.
+  - [x] Add `sync_transforms_2d` system to project `GroundPos` into `Transform.translation.xy` at proper $Z$ layers (superseded by decoupled 3D proxy transform sync and 2D debug gizmo renderer).
 - [ ] **Errand Data Structures**:
   - [ ] Define `Errand` component and `ErrandList` resource (e.g., Target Store, Item Required, Completed status).
   - [ ] Implement initial scenario: Mother's Checklist (e.g. 1. Pick up prescription at _Walgroins_, 2. Buy family dinner at _Taco Hell_, 3. Return home).
@@ -131,12 +131,12 @@ Build auditory feedback reinforcing the stress and absurdity of stroad design.
   - [ ] Dialogue soundbites or text prompts from Mats's mother with Dutch accent / phrasing.
   - [ ] Satirical jingles upon entering parody store locations.
 
-### Phase 6: Web Build & Distribution (`docs/3d-view-plan.md`)
+### Phase 6: Web Build & Distribution (`plans/3d-plan.md`)
 
-Execute the web build and distribution steps unified in `docs/3d-view-plan.md` to ensure browser playability and static hosting deployment.
+Execute the web build and distribution steps unified in `plans/3d-plan.md` to ensure browser playability and static hosting deployment.
 
-- [ ] Complete toolchain setup (`trunk`, `wasm32-unknown-unknown`, `wasm-opt`).
-- [ ] Configure `index.html` canvas binding and responsive parent container.
-- [ ] Implement browser audio unlock (click-to-start title screen).
-- [ ] Audit and enforce wasm size budget (< 15 MB uncompressed, target < 10 MB).
-- [ ] Setup GitHub Actions CI pipeline deploying to GitHub Pages and itch.io.
+- [x] Complete toolchain setup (`trunk`, `wasm32-unknown-unknown`, `wasm-opt`).
+- [x] Configure `index.html` canvas binding and responsive parent container.
+- [ ] Implement browser audio unlock (click-to-start title screen) _(deferred; `bevy_audio` feature trimmed to optimize wasm size)_.
+- [x] Audit and enforce wasm size budget (< 15 MB uncompressed, target < 10 MB; recorded 24.7 MB with full 3D pipeline).
+- [x] Setup GitHub Actions CI pipeline deploying to GitHub Pages and itch.io.

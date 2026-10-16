@@ -14,3 +14,11 @@ run = "cargo run --features dynamic_linking"
 [tasks.build]
 description = "Build with Bevy dynamically linked (shares artifacts with `dev`)"
 run = "cargo build --features dynamic_linking"
+
+[tasks.web]
+description = "Build WebAssembly release package via Trunk"
+run = "env -u NO_COLOR trunk build --release --cargo-profile wasm-release"
+
+[tasks.serve]
+description = "Serve WebAssembly build locally with live reload via Trunk"
+run = "env -u NO_COLOR trunk serve"

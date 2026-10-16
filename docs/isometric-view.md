@@ -21,9 +21,9 @@ Consequence: a **3D scene rendered at low resolution and upscaled with nearest-n
 | **B. 3D low-res ("3D pixel art")** ✅ | `Camera3d` (ortho or narrow perspective) renders to a small texture (e.g. 320×320), upscaled ×2.5 with nearest sampling | Best: any angle, horizon, shadows           | Easy: `(x,y) → (x,0,-y)` | Free: just rotate the mesh        | Medium: low-poly models + small palette textures | Larger (`3d` feature)   |
 | **C. Hybrid 2.5D**                    | B for world/cars/buildings; Mats and pedestrians as camera-facing pixel sprites (billboards)                            | Best for characters (crisp hand-drawn Mats) | Same as B                | Free for cars                     | Medium                                           | Same as B               |
 
-**Decision: B now, grow into C.** Cars, roads, poles, and buildings as low-poly 3D; Mats as a billboarded pixel sprite once there's a sprite sheet (a capsule mesh until then). Approach A is the fallback if the wasm budget in `docs/3d-view-plan.md` can't absorb the `3d` feature.
+**Decision: B now, grow into C.** Cars, roads, poles, and buildings as low-poly 3D; Mats as a billboarded pixel sprite once there's a sprite sheet (a capsule mesh until then). Approach A is the fallback if the wasm budget in `plans/3d-plan.md` can't absorb the `3d` feature.
 
-Risk: `docs/3d-view-plan.md` already records a 29.4 MB baseline against a < 15 MB budget. Adding 3D rendering makes that budget harder. Measure after the spike (§5) before committing; if it blows up, A is the escape hatch, and the sim refactor (§3) is needed by both.
+Risk: `plans/3d-plan.md` already records a 29.4 MB baseline against a < 15 MB budget. Adding 3D rendering makes that budget harder. Measure after the spike (§5) before committing; if it blows up, A is the escape hatch, and the sim refactor (§3) is needed by both.
 
 ## 2. Making assets
 
@@ -71,7 +71,7 @@ no text, transparent background, game asset
 5. Buildings: strip-mall block with swappable facades (_Walgroins_, _Taco Hell_, _Depot Depot_), parking-lot stripes.
 6. HUD: heart, errand card (Bevy UI, 9-slice pixel frame).
 
-Put assets under `assets/` (loaded via `AssetServer`; `docs/3d-view-plan.md` Phase 10 notes adding the Trunk `copy-dir` line when it exists). Commit source files (`.blend`, `.aseprite`) under `art/` so exports can be regenerated.
+Put assets under `assets/` (loaded via `AssetServer`; `plans/3d-plan.md` Phase 10 notes adding the Trunk `copy-dir` line when it exists). Commit source files (`.blend`, `.aseprite`) under `art/` so exports can be regenerated.
 
 ## 3. Linking the view to the 2D model
 
@@ -146,10 +146,43 @@ Keep this in the view plugin (as a resource `ScreenToGround(Mat2)` that `player_
 - Sky + distant hills as a 2D pixel-art backdrop behind the 3D layer (only visible at the reference's lower angle).
 - Wires between utility poles as catenary line meshes; cheap and very on-theme.
 
-## 5. Spike plan
+## 5. Implementation Status & Plain-3D Foundation
 
-1. **Sim refactor** (masterplan Phase 1 prerequisite): add `GroundPos`/`Heading`, port movement/collision/restart, add `sync_2d`. Existing tests should pass with the position source swapped; game looks identical.
-2. **Iso spike:** enable Bevy `3d` rendering, `IsoViewPlugin` with Kenney road tiles + cars, Mats as a capsule, ortho camera at 30° pitch / 45° yaw, `F1` toggle. Arrow-key remap.
-3. **Low-res + palette:** render-to-texture at 320×320, nearest upscale, texel snapping.
-4. **Measure:** wasm size vs. `docs/3d-view-plan.md` budget, frame time in Chromium. Go/no-go on approach B vs. A.
-5. **Art pass:** style sheet → Mats sprite billboard → one hero storefront (Taco Hell) → custom pickup truck.
+### 5.1 Completed Plain-3D & Gizmo Debug Foundation
+
+The foundation spike outlined in `plans/3d-plan.md` is fully implemented and validated:
+
+1. **Simulation Decoupling (Phase 1)**: All gameplay mechanics (player movement, traffic progression, curve navigation, stopline deceleration/queuing, rear-end crash detection, and pedestrian collisions) operate on a pure 2D ground plane via `GroundPos(Vec2)` and `Heading(f32)`. Simulation systems never touch Bevy `Transform`.
+2. **Plain-3D Main View (`View3dPlugin`)**:
+   - Player rendered as a 3D pill/capsule mesh (`Player3d`).
+   - Vehicles rendered as 3D box meshes (`Car3d`) with dynamic color materials, braking taillight accents, and crashed deformation materials.
+   - Road surface rendered as 3D flat rectangular meshes with `StandardMaterial` (asphalt, borders, dashed centerlines, stoplines).
+   - 3D traffic signals with vertical poles, horizontal cantilever arms, signal head housings, and emissive color spheres matching intersection signal state.
+   - Perspective camera (`Camera3d`, 55° downward pitch, yaw 0 looking north along corridor) tracking clamped player movement.
+   - Entity linking: visual meshes are discrete proxy entities spawned with `linked_spawn`, automatically despawning when the simulation entity is removed.
+3. **Gizmo Debug 2D View (`DebugView2dPlugin`)**:
+   - `Camera2d` orthographic camera (`TopDownCamera`) drawing road outlines, signal aspect markers, car bounding boxes, player circles, and blood splat X-markers directly from simulation state via Bevy Gizmos.
+   - Active only when `ViewMode::TopDown`, skipping all gizmo rendering while in 3D.
+4. **View Toggle (`ViewTogglePlugin`)**:
+   - Seamless dynamic toggling between `ViewMode::ThreeD` and `ViewMode::TopDown` via the `V` key or the top-left UI button ("2D Debug (V)" / "3D View (V)").
+   - Smoothly transfers `IsDefaultUiCamera` and re-targets `UiTargetCamera` so HUD elements remain attached.
+
+### 5.2 Recorded Wasm Sizes & Web Performance
+
+Measurements taken using `trunk build --release --cargo-profile wasm-release`:
+
+| Stage                 | Configuration                                                                       | Uncompressed `.wasm`        | Compressed (gzip) | Status & Notes                             |
+| :-------------------- | :---------------------------------------------------------------------------------- | :-------------------------- | :---------------- | :----------------------------------------- |
+| **Baseline 2D**       | Bevy default features (2D only)                                                     | 29,431,643 B (~29.4 MB)     | ~7.8 MB           | Initial web baseline                       |
+| **Plain-3D Addition** | Bevy default features + `3d`                                                        | 26,343,936 B (~26.3 MB)     | ~7.0 MB           | Includes 3D meshes, materials, lighting    |
+| **Feature Trimming**  | `default-features = false`, `["2d", "3d", "ui", "default_platform", "default_app"]` | **25,874,695 B (~24.7 MB)** | **~6.7 MB**       | Omitted unused `bevy_audio`; saved ~470 KB |
+
+- **Browser Validation**: Verified in Chromium on WebGL2. Zero shader compilation errors, zero buffer errors, stable 60 FPS, and depth-tested gizmo contrast against clear color.
+
+### 5.3 Roadmap to Isometric Pixel-Art Style
+
+With the 3D pipeline and 2D debug foundation in place, the path to the target aesthetic from §1 (Approach B/C) consists of:
+
+1. **Render-to-Texture Pipeline**: Render `Camera3d` into a low-resolution offscreen texture (e.g. 320×320 or 400×400) sampled with nearest filtering (`ImageSampler::nearest()`), blitted to the canvas via `Camera2d` + fullscreen quad to achieve authentic pixelation without crawl/shimmer.
+2. **Isometric Angle & Deadzone Follow**: Set camera to 45° yaw and 30° elevation (or corridor-aligned narrow perspective), with texel-snapped subpixel smoothing and player deadzone tracking.
+3. **Art Asset Integration**: Replace primitive capsule/box meshes with custom low-poly models (Kenney/custom vehicles, strip mall storefronts, utility poles) and billboarded pixel-art sprites for Mats and pedestrians.

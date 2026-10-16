@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::constants::*;
 use crate::sim::{GroundPos, Heading};
-use crate::state::AppState;
+use crate::state::{AppState, GameSet};
 /// Distinct bright color for the player circle
 pub const COLOR_PLAYER: Color = Color::srgb(0.2, 0.85, 0.35);
 
@@ -51,19 +51,9 @@ pub fn clamp_position(pos: Vec2, radius: f32) -> Vec2 {
     Vec2::new(pos.x.clamp(min_x, max_x), pos.y.clamp(min_y, max_y))
 }
 
-/// System to spawn the player character as a circle mesh
-pub fn setup_player(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    let circle = meshes.add(Circle::new(PLAYER_RADIUS));
-    let material = materials.add(ColorMaterial::from_color(COLOR_PLAYER));
-
+/// System to spawn the player character entity
+pub fn setup_player(mut commands: Commands) {
     commands.spawn((
-        Mesh2d(circle),
-        MeshMaterial2d(material),
-        Transform::from_xyz(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER),
         GroundPos(PLAYER_SPAWN_POS),
         Heading::ZERO,
         Player::default(),
@@ -92,6 +82,9 @@ pub fn player_movement(
     }
 
     let move_direction = direction.normalize_or_zero();
+    if move_direction == Vec2::ZERO {
+        return;
+    }
 
     for (player, mut ground_pos) in &mut query {
         if !player.alive {
@@ -100,7 +93,10 @@ pub fn player_movement(
 
         let delta = move_direction * player.speed * time.delta_secs();
         let new_pos = ground_pos.0 + delta;
-        ground_pos.0 = clamp_position(new_pos, player.radius);
+        let clamped = clamp_position(new_pos, player.radius);
+        if ground_pos.0 != clamped {
+            ground_pos.0 = clamped;
+        }
     }
 }
 
@@ -111,7 +107,12 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Startup, setup_player)
-            .add_systems(Update, player_movement.run_if(in_state(AppState::InGame)));
+            .add_systems(
+                Update,
+                player_movement
+                    .in_set(GameSet::Sim)
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
 }
 
@@ -184,31 +185,17 @@ mod tests {
     #[test]
     fn test_setup_player_spawns_entity() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, StatesPlugin, AssetPlugin::default()))
-            .init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<ColorMaterial>>()
+        app.add_plugins((MinimalPlugins, StatesPlugin))
             .init_state::<AppState>()
             .add_systems(Startup, setup_player);
 
         app.update();
 
-        let mut query = app.world_mut().query::<(
-            &Player,
-            &GroundPos,
-            &Heading,
-            &Mesh2d,
-            &MeshMaterial2d<ColorMaterial>,
-        )>();
-        let players: Vec<(
-            &Player,
-            &GroundPos,
-            &Heading,
-            &Mesh2d,
-            &MeshMaterial2d<ColorMaterial>,
-        )> = query.iter(app.world()).collect();
+        let mut query = app.world_mut().query::<(&Player, &GroundPos, &Heading)>();
+        let players: Vec<(&Player, &GroundPos, &Heading)> = query.iter(app.world()).collect();
 
         assert_eq!(players.len(), 1, "Exactly one player should be spawned");
-        let (player, ground_pos, heading, _mesh, _mat) = players[0];
+        let (player, ground_pos, heading) = players[0];
         assert_eq!(player.radius, PLAYER_RADIUS);
         assert_eq!(player.speed, PLAYER_SPEED);
         assert!(player.is_alive());

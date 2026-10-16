@@ -8,7 +8,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.20.0"
+bevy = { version = "0.20.0", default-features = false, features = [
+  "2d",
+  "3d",
+  "ui",
+  "default_platform",
+  "default_app",
+] }
 # Compile out trace-level logs from Bevy's dependencies (runtime perf), and keep only
 # warn/error in release builds. Wildcard version per the guide: `log` is already pulled
 # in by Bevy, so this only selects features; Cargo.lock pins the actual version.
@@ -48,6 +54,8 @@ lto = "thin"
 inherits = "release"
 # Optimize with size in mind (also try "z", sometimes it is better).
 # Slightly slows compile times, great improvements to file size and runtime performance.
-opt-level = "s"
+opt-level = "z"
+lto = "thin"
+panic = "abort"
 # Strip all debugging information from the binary to slightly reduce file size.
 strip = "debuginfo"

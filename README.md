@@ -14,6 +14,14 @@ I am picturing something with pixel art graphics, but not married to this idea.
 
 I think the underlying model should perhaps be 3D, so I can simulate real traffic patterns (cars drive to their destinations, park, person gets out, gets back in, drives somewhere else.)
 
+## Controls
+
+| Key / Action                        | Action                                                  |
+| ----------------------------------- | ------------------------------------------------------- |
+| `W` / `A` / `S` / `D` or Arrow Keys | Move Mats across the stroad                             |
+| `R` (or `Space` after crash)        | Restart run, reset SPD counter, and clear cars          |
+| `V` or Top-Left Button              | Toggle between 3D view and top-down 2D debug gizmo view |
+
 ## Development
 
 Requires [mise](https://mise.jdx.dev) (installs latest stable Rust) and the
@@ -24,16 +32,19 @@ Requires [mise](https://mise.jdx.dev) (installs latest stable Rust) and the
 mise run dev     # cargo run, Bevy dynamically linked (fast rebuilds)
 mise run build   # same, build only
 mise run fmt     # cargo fmt & oxfmt
-cargo run --release                  # optimized native build (statically linked)
-trunk build --release --cargo-profile wasm-release  # web build
+mise run web     # trunk build --release --cargo-profile wasm-release (web build)
+mise run serve   # trunk serve (local web dev server)
+cargo run --release  # optimized native build (statically linked)
 ```
 
 ### Web & itch.io Packaging
 
 1. Build with relative URLs:
+
    ```sh
    trunk build --release --cargo-profile wasm-release --public-url ./
    ```
+
 2. Package the `dist/` contents as a zip archive with `index.html` at the zip root:
    ```sh
    cd dist && zip -r ../stroad-hero-web.zip . && cd ..

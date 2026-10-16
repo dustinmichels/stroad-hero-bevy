@@ -4,11 +4,11 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::constants::*;
-use crate::player::{COLOR_PLAYER, Player};
+use crate::player::Player;
 use crate::sim::{GroundPos, Heading};
 use crate::spd::Spd;
-use crate::state::AppState;
-use crate::traffic::{Car, SpawnTimer};
+use crate::state::{AppState, GameSet};
+use crate::traffic::{Car, SpawnTimer, TrafficSignal};
 /// Component representing a blood splat on the floor
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BloodSplat {
@@ -113,25 +113,9 @@ pub fn create_blood_splat_mesh(seed: u64, base_radius: f32) -> Mesh {
 }
 
 /// Spawns a blood splat on the floor at the specified position
-pub fn spawn_blood_splat(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-    position: Vec2,
-    seed: u64,
-) -> Entity {
-    let mesh = create_blood_splat_mesh(seed, PLAYER_RADIUS * 1.15);
-    let mesh_handle = meshes.add(mesh);
-    let mat_handle = materials.add(ColorMaterial::from_color(COLOR_BLOOD_SPLAT));
-
+pub fn spawn_blood_splat(commands: &mut Commands, position: Vec2, seed: u64) -> Entity {
     commands
-        .spawn((
-            Mesh2d(mesh_handle),
-            MeshMaterial2d(mat_handle),
-            Transform::from_xyz(position.x, position.y, Z_BLOOD_SPLAT),
-            GroundPos(position),
-            BloodSplat { seed },
-        ))
+        .spawn((GroundPos(position), BloodSplat { seed }))
         .id()
 }
 
@@ -188,35 +172,36 @@ pub fn check_circle_obb_collision(
 /// When an overlap is detected:
 /// 1. SPD counter is incremented.
 /// 2. A blood splat is spawned on the floor at the collision coordinates (a pale circle with procedural randomness).
-/// 3. Player is reset back to `PLAYER_SPAWN_POS` (alive, restored to `COLOR_PLAYER`).
+/// 3. Player is reset back to `PLAYER_SPAWN_POS` (alive).
 /// 4. A `PlayerDiedEvent` is triggered via `commands.trigger(...)`.
-type PlayerQueryData<'w> = (
-    Entity,
-    &'w mut Player,
-    &'w mut GroundPos,
-    Option<&'w MeshMaterial2d<ColorMaterial>>,
-);
+type PlayerQueryData<'w> = (Entity, &'w mut Player, &'w mut GroundPos);
 
 pub fn collision_detection(
     mut commands: Commands,
     mut player_query: Query<PlayerQueryData<'_>, Without<Car>>,
     car_query: Query<(Entity, &Car, &GroundPos, &Heading), Without<Player>>,
-    mut materials: Option<ResMut<Assets<ColorMaterial>>>,
-    mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut spd: Option<ResMut<Spd>>,
 ) {
-    for (player_entity, mut player, mut player_pos, maybe_mat) in &mut player_query {
+    for (player_entity, mut player, mut player_pos) in &mut player_query {
         if !player.alive {
             continue;
         }
 
         let p_pos = player_pos.0;
 
+        let p_radius = player.radius;
+
         for (car_entity, car, car_pos, car_heading) in &car_query {
             let c_pos = car_pos.0;
+            let diff = p_pos - c_pos;
+            let max_reach = car.half_extents().length() + p_radius;
+            if diff.length_squared() > max_reach * max_reach {
+                continue;
+            }
+
             let angle = car_heading.0;
 
-            if check_circle_obb_collision(p_pos, player.radius, c_pos, car.half_extents(), angle) {
+            if check_circle_obb_collision(p_pos, p_radius, c_pos, car.half_extents(), angle) {
                 // 1. Increment SPD
                 let current_spd = if let Some(spd_res) = spd.as_deref_mut() {
                     spd_res.increment();
@@ -226,24 +211,14 @@ pub fn collision_detection(
                 };
 
                 // 2. Leave a blood splat on the floor
-                if let (Some(meshes_res), Some(mats_res)) =
-                    (meshes.as_deref_mut(), materials.as_deref_mut())
-                {
-                    let seed = (p_pos.x.to_bits() as u64)
-                        ^ ((p_pos.y.to_bits() as u64) << 16)
-                        ^ (current_spd as u64).wrapping_mul(0x9e3779b97f4a7c15);
-                    spawn_blood_splat(&mut commands, meshes_res, mats_res, p_pos, seed);
-                }
+                let seed = (p_pos.x.to_bits() as u64)
+                    ^ ((p_pos.y.to_bits() as u64) << 16)
+                    ^ (current_spd as u64).wrapping_mul(0x9e3779b97f4a7c15);
+                spawn_blood_splat(&mut commands, p_pos, seed);
 
                 // 3. Reset player back to starting position
                 player_pos.0 = PLAYER_SPAWN_POS;
                 player.alive = true;
-
-                if let Some(mut mat) =
-                    maybe_mat.and_then(|h| materials.as_deref_mut()?.get_mut(&h.0))
-                {
-                    mat.color = COLOR_PLAYER;
-                }
 
                 // 4. Trigger PlayerDiedEvent
                 commands.trigger(PlayerDiedEvent {
@@ -262,18 +237,17 @@ pub fn collision_detection(
 ///
 /// On restart:
 /// 1. Player is marked alive and reset to `PLAYER_SPAWN_POS`.
-/// 2. Player material color is restored to `COLOR_PLAYER`.
-/// 3. All car entities are despawned.
-/// 4. All blood splats are cleared.
-/// 5. SPD counter is reset.
-/// 6. The traffic `SpawnTimer` is reset.
-/// 7. State transitions to `AppState::InGame`.
+/// 2. All car entities are despawned.
+/// 3. All blood splats are cleared.
+/// 4. SPD counter is reset.
+/// 5. The traffic `SpawnTimer` is reset.
+/// 6. State transitions to `AppState::InGame`.
 #[derive(SystemParam)]
 pub struct RestartResources<'w, 's> {
     pub keyboard_input: Res<'w, ButtonInput<KeyCode>>,
     pub commands: Commands<'w, 's>,
     pub spawn_timer: Option<ResMut<'w, SpawnTimer>>,
-    pub materials: Option<ResMut<'w, Assets<ColorMaterial>>>,
+    pub signal: Option<ResMut<'w, TrafficSignal>>,
     pub spd: Option<ResMut<'w, Spd>>,
     pub next_state: Option<ResMut<'w, NextState<AppState>>>,
     pub current_state: Option<Res<'w, State<AppState>>>,
@@ -281,11 +255,7 @@ pub struct RestartResources<'w, 's> {
 
 pub fn restart_game(
     res: RestartResources,
-    mut player_query: Query<(
-        &mut Player,
-        &mut GroundPos,
-        Option<&MeshMaterial2d<ColorMaterial>>,
-    )>,
+    mut player_query: Query<(&mut Player, &mut GroundPos)>,
     car_query: Query<Entity, With<Car>>,
     splat_query: Query<Entity, With<BloodSplat>>,
 ) {
@@ -293,7 +263,7 @@ pub fn restart_game(
         keyboard_input,
         mut commands,
         spawn_timer,
-        mut materials,
+        signal,
         spd,
         next_state,
         current_state,
@@ -308,12 +278,9 @@ pub fn restart_game(
     };
 
     if should_restart {
-        for (mut player, mut ground_pos, maybe_mat) in &mut player_query {
+        for (mut player, mut ground_pos) in &mut player_query {
             player.alive = true;
             ground_pos.0 = PLAYER_SPAWN_POS;
-            if let Some(mut mat) = maybe_mat.and_then(|h| materials.as_deref_mut()?.get_mut(&h.0)) {
-                mat.color = COLOR_PLAYER;
-            }
         }
 
         for car_entity in &car_query {
@@ -326,6 +293,10 @@ pub fn restart_game(
 
         if let Some(mut timer) = spawn_timer {
             *timer = SpawnTimer::default();
+        }
+
+        if let Some(mut sig) = signal {
+            sig.reset();
         }
 
         if let Some(mut spd_res) = spd {
@@ -349,16 +320,22 @@ impl Plugin for CollisionPlugin {
             .init_resource::<Spd>()
             .add_systems(
                 Update,
-                collision_detection.run_if(in_state(AppState::InGame)),
-            )
-            .add_systems(Update, restart_game);
+                (
+                    restart_game.in_set(GameSet::Input),
+                    collision_detection
+                        .in_set(GameSet::Collision)
+                        .after(crate::player::player_movement)
+                        .run_if(in_state(AppState::InGame)),
+                ),
+            );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player::COLOR_PLAYER_DEAD;
+
+    use crate::traffic::CarMotion;
     use bevy::input::ButtonInput;
     use bevy::state::app::StatesPlugin;
 
@@ -525,8 +502,6 @@ mod tests {
     fn setup_collision_test_app() -> App {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, StatesPlugin, AssetPlugin::default()))
-            .init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<ColorMaterial>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_state::<AppState>()
             .add_plugins(CollisionPlugin);
@@ -546,6 +521,7 @@ mod tests {
             GroundPos(Vec2::new(200.0, 200.0)),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
         app.update();
 
@@ -575,19 +551,10 @@ mod tests {
             },
         );
 
-        // Set up player material
-        let mut materials = app.world_mut().resource_mut::<Assets<ColorMaterial>>();
-        let mat_handle = materials.add(ColorMaterial::from_color(COLOR_PLAYER));
-
         // Spawn player and car overlapping at (0, 0)
         let player_entity = app
             .world_mut()
-            .spawn((
-                GroundPos(Vec2::ZERO),
-                Heading::ZERO,
-                MeshMaterial2d(mat_handle.clone()),
-                Player::default(),
-            ))
+            .spawn((GroundPos(Vec2::ZERO), Heading::ZERO, Player::default()))
             .id();
 
         let car_entity = app
@@ -596,6 +563,7 @@ mod tests {
                 GroundPos(Vec2::ZERO),
                 Heading::ZERO,
                 Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+                CarMotion::new(CAR_SPEED),
             ))
             .id();
 
@@ -661,6 +629,7 @@ mod tests {
             GroundPos(Vec2::ZERO),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         app.update();
@@ -687,27 +656,20 @@ mod tests {
             *app.world().resource::<State<AppState>>().get(),
             AppState::GameOver
         );
-
-        let mut materials = app.world_mut().resource_mut::<Assets<ColorMaterial>>();
-        let mat_handle = materials.add(ColorMaterial::from_color(COLOR_PLAYER_DEAD));
-
         // Spawn dead player moved from spawn pos
         let player = Player {
             alive: false,
             ..Default::default()
         };
-        app.world_mut().spawn((
-            GroundPos(Vec2::new(50.0, 50.0)),
-            Heading::ZERO,
-            MeshMaterial2d(mat_handle.clone()),
-            player,
-        ));
+        app.world_mut()
+            .spawn((GroundPos(Vec2::new(50.0, 50.0)), Heading::ZERO, player));
 
         // Spawn cars
         app.world_mut().spawn((
             GroundPos(Vec2::new(10.0, 10.0)),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         // Press Space
@@ -725,8 +687,7 @@ mod tests {
         assert!(player.alive);
         assert_eq!(ground_pos.0, PLAYER_SPAWN_POS);
 
-        let materials = app.world().resource::<Assets<ColorMaterial>>();
-        assert_eq!(materials.get(&mat_handle).unwrap().color, COLOR_PLAYER);
+        // Player should be alive, back at spawn position
 
         // All cars should be despawned
         let car_count = app.world_mut().query::<&Car>().iter(app.world()).count();
@@ -763,6 +724,7 @@ mod tests {
             GroundPos(Vec2::ZERO),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         // Press R
@@ -811,6 +773,7 @@ mod tests {
             GroundPos(Vec2::ZERO),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         app.update();
@@ -845,6 +808,7 @@ mod tests {
             GroundPos(Vec2::ZERO),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         // Press KeyR while InGame
@@ -884,6 +848,7 @@ mod tests {
             GroundPos(Vec2::ZERO),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         // Press Space while InGame (Space is for restart only on GameOver)
@@ -927,21 +892,25 @@ mod tests {
             GroundPos(Vec2::new(0.0, geom.east_lane_y())),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
         app.world_mut().spawn((
             GroundPos(Vec2::new(0.0, geom.west_lane_y())),
             Heading::new(std::f32::consts::PI),
             Car::new(CAR_SPEED, -Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
         app.world_mut().spawn((
             GroundPos(Vec2::new(geom.south_lane_x(), 0.0)),
             Heading::new(-std::f32::consts::FRAC_PI_2),
             Car::new(CAR_SPEED, -Vec2::Y, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
         app.world_mut().spawn((
             GroundPos(Vec2::new(geom.north_lane_x(), 0.0)),
             Heading::new(std::f32::consts::FRAC_PI_2),
             Car::new(CAR_SPEED, Vec2::Y, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         app.update();
@@ -1017,8 +986,6 @@ mod tests {
             .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_secs_f32(dt),
             ))
-            .init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<ColorMaterial>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<crate::road::RoadGeometry>()
             .init_state::<AppState>()
@@ -1035,13 +1002,11 @@ mod tests {
             AppState::InGame
         );
 
-        let (player_entity, mat_handle) = {
-            let mut q = app
-                .world_mut()
-                .query::<(Entity, &Player, &MeshMaterial2d<ColorMaterial>)>();
-            let (e, p, m) = q.single(app.world()).unwrap();
+        let player_entity = {
+            let mut q = app.world_mut().query::<(Entity, &Player)>();
+            let (e, p) = q.single(app.world()).unwrap();
             assert!(p.alive);
-            (e, m.0.clone())
+            e
         };
 
         // 1. Move player using arrow keys
@@ -1058,11 +1023,17 @@ mod tests {
         assert!(player_pos.x > PLAYER_SPAWN_POS.x);
         assert!(player_pos.y > PLAYER_SPAWN_POS.y);
 
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+        }
+
         // 2. Spawn a car directly overlapping the player to cause collision
         app.world_mut().spawn((
             GroundPos(player_pos),
             Heading::ZERO,
             Car::new(CAR_SPEED, Vec2::X, CAR_LENGTH, CAR_WIDTH),
+            CarMotion::new(CAR_SPEED),
         ));
 
         // Update to run collision detection
@@ -1092,14 +1063,6 @@ mod tests {
         assert!(player.alive, "Player must be alive at spawn");
         let player_gpos = app.world().get::<GroundPos>(player_entity).unwrap();
         assert_eq!(player_gpos.0, PLAYER_SPAWN_POS);
-        assert_eq!(
-            app.world()
-                .resource::<Assets<ColorMaterial>>()
-                .get(&mat_handle)
-                .unwrap()
-                .color,
-            COLOR_PLAYER
-        );
         assert_eq!(
             *app.world().resource::<State<AppState>>().get(),
             AppState::InGame
@@ -1210,6 +1173,7 @@ mod tests {
                     CAR_LENGTH,
                     CAR_WIDTH,
                 ),
+                CarMotion::new(CAR_SPEED),
             ))
             .id();
 
@@ -1231,5 +1195,125 @@ mod tests {
         let splats: Vec<(&BloodSplat, &GroundPos)> = splat_query.iter(app.world()).collect();
         assert_eq!(splats.len(), 1);
         assert_eq!(splats[0].1.0, curve_car_pos);
+    }
+
+    #[test]
+    fn test_restart_resets_signal_clears_queued_and_crashed_cars_and_resets_spawn_timer() {
+        use crate::traffic::{Crashed, TrafficLane, TrafficLightState};
+        let mut app = setup_collision_test_app();
+        app.init_resource::<SpawnTimer>();
+        app.init_resource::<TrafficSignal>();
+
+        // 1. Set signal to Red with 2.5s elapsed
+        {
+            let mut sig = app.world_mut().resource_mut::<TrafficSignal>();
+            sig.state = TrafficLightState::Red;
+            sig.timer
+                .set_elapsed(std::time::Duration::from_secs_f32(2.5));
+        }
+
+        // 2. Set spawn timer to dirty state
+        {
+            let mut timer = app.world_mut().resource_mut::<SpawnTimer>();
+            timer
+                .timer
+                .set_elapsed(std::time::Duration::from_secs_f32(1.8));
+            timer.deferred = true;
+            timer.next_lane_index = 3;
+        }
+
+        // 3. Set GameOver state
+        {
+            let mut next_state = app.world_mut().resource_mut::<NextState<AppState>>();
+            next_state.set(AppState::GameOver);
+        }
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::GameOver
+        );
+
+        // 4. Spawn player, moving car, queued car at stop line, and crashed car
+        app.world_mut().spawn((
+            Player {
+                alive: false,
+                ..default()
+            },
+            GroundPos(Vec2::new(50.0, 50.0)),
+            Heading::ZERO,
+        ));
+
+        let _moving_car = app
+            .world_mut()
+            .spawn((
+                Car::new(200.0, Vec2::X, CAR_LENGTH, CAR_WIDTH).with_lane(TrafficLane::Eastbound),
+                CarMotion::new(200.0),
+                GroundPos(Vec2::new(-200.0, -30.0)),
+                Heading::ZERO,
+            ))
+            .id();
+
+        let _queued_car = app
+            .world_mut()
+            .spawn((
+                Car::new(0.0, Vec2::X, CAR_LENGTH, CAR_WIDTH).with_lane(TrafficLane::Eastbound),
+                CarMotion::new(200.0).with_speeds(0.0, 0.0),
+                GroundPos(Vec2::new(-80.0, -30.0)),
+                Heading::ZERO,
+            ))
+            .id();
+
+        let _crashed_car = app
+            .world_mut()
+            .spawn((
+                Car::new(0.0, Vec2::X, CAR_LENGTH, CAR_WIDTH).with_lane(TrafficLane::Eastbound),
+                CarMotion::new(0.0),
+                GroundPos(Vec2::new(-70.0, -30.0)),
+                Heading::ZERO,
+                Crashed::default(),
+            ))
+            .id();
+
+        assert_eq!(app.world_mut().query::<&Car>().iter(app.world()).count(), 3);
+
+        // 5. Trigger restart via Space
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.press(KeyCode::Space);
+
+        app.update();
+
+        // 6. Verify: Signal reset to Green with 0 elapsed
+        let sig = app.world().resource::<TrafficSignal>();
+        assert_eq!(sig.state, TrafficLightState::Green);
+        assert_eq!(sig.timer.elapsed_secs(), 0.0);
+
+        // 7. Verify: Spawn timer reset
+        let timer = app.world().resource::<SpawnTimer>();
+        assert_eq!(timer.timer.elapsed_secs(), 0.0);
+        assert!(!timer.deferred);
+        assert_eq!(timer.next_lane_index, 0);
+
+        // 8. Verify: All cars (queued, moving, crashed) despawned
+        let car_count = app.world_mut().query::<&Car>().iter(app.world()).count();
+        assert_eq!(
+            car_count, 0,
+            "All cars including queued and crashed must be despawned on restart"
+        );
+
+        // 9. Verify: Player alive and reset to spawn
+        let (player, ground_pos) = app
+            .world_mut()
+            .query::<(&Player, &GroundPos)>()
+            .single(app.world())
+            .unwrap();
+        assert!(player.alive);
+        assert_eq!(ground_pos.0, PLAYER_SPAWN_POS);
+
+        // 10. Verify: State transitions to InGame
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::InGame
+        );
     }
 }

@@ -422,6 +422,7 @@ def build_extruded(name, info, depth=4.0):
 # ---------- scene / preview ----------
 
 def setup_scene(ob):
+    obs = ob if isinstance(ob, list) else [ob]
     scene = bpy.context.scene
     for eng in ("BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"):
         try:
@@ -455,11 +456,11 @@ def setup_scene(ob):
     bpy.context.view_layer.update()
     rot = cam.rotation_euler.to_matrix()
     inv = rot.transposed()
-    corners = [ob.matrix_world @ Vector(c) for c in ob.bound_box]
+    corners = [o.matrix_world @ Vector(c) for o in obs if o.type == "MESH" for c in o.bound_box]
     vc = [inv @ c for c in corners]
     xs, ys = [p.x for p in vc], [p.y for p in vc]
     w, h = max(xs) - min(xs), max(ys) - min(ys)
-    centre = sum(corners, Vector()) / 8
+    centre = sum(corners, Vector()) / len(corners)
     cam.location = centre - (rot @ Vector((0, 0, -1))) * 2000
     cam.data.clip_end = 5000
     pad = 1.1
@@ -531,4 +532,5 @@ def main():
             finish(name, "people", variant, ob, 0.4)
 
 
-main()
+if __name__ == "__main__":
+    main()

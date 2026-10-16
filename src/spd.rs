@@ -1,3 +1,5 @@
+use crate::state::GameSet;
+
 use bevy::prelude::*;
 
 /// Game variable: Senseless Pedestrian Deaths (SPD)
@@ -56,7 +58,12 @@ impl Plugin for SpdPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Spd>()
             .add_systems(Startup, setup_spd_ui)
-            .add_systems(Update, update_spd_ui);
+            .add_systems(
+                Update,
+                update_spd_ui
+                    .in_set(GameSet::RenderSync)
+                    .run_if(resource_changed::<Spd>),
+            );
     }
 }
 
