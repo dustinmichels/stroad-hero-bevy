@@ -119,13 +119,6 @@ Tackle the preflight and deployment workstreams in parallel with each other and 
 
 - [x] Move source asset `assets/car.blend` (~546 KB) to `art/car.blend` to keep unneeded build assets out of web distribution bundles.
 - [x] Delete `assets/.DS_Store` and ensure `.DS_Store` is present in `.gitignore`.
-- [!] Run dev server and test baseline 2D build in Chrome, Firefox, and Safari - **Issue:** Verified dev server (`trunk serve`) and baseline 2D rendering in Chrome/Chromium; manual check required in Firefox and Safari.
-  ```bash
-  env -u NO_COLOR trunk serve   # http://127.0.0.1:8080
-  ```
-  _(Note: Trunk expects boolean `NO_COLOR` (`true`/`false`). If `NO_COLOR=1` is exported in environment, invoke with `env -u NO_COLOR`.)_
-- [!] Verify arrow keys and WASD prevent page scrolling in all browsers - **Issue:** Verified preventDefault handling for WASD and arrow keys in Chrome/Chromium; manual check required in Firefox and Safari.
-- [!] Verify mobile browser layout and frame rate - **Issue:** Requires testing on a physical mobile device.
 - [x] Verify browser developer console is clean with no WebGL/JS panics.
 - [x] Verify desktop build (`cargo run` / `mise run dev`) remains unaffected.
 
@@ -210,7 +203,6 @@ After the shared 3D resources exist, tackle roads, the player, cars, and blood s
 ##### Car Boxes & Curve Navigation
 
 - [ ] Add `On<Add, Car>` observer spawning `Cuboid` (`length × CAR_HEIGHT_3D × width`, long axis = local X) plus `View3dOf(car)`.
-- [ ] (Alternative shape option) Evaluate long pill: `Capsule3d` with radius `width/2` and length `length - width`, rotated along X.
 - [ ] Allocate shared mesh handles and small palette of shared materials (zero per-car allocation).
 - [ ] Implement `sync_3d_cars`: sync translation from `GroundPos` and rotation from `heading_to_3d(Heading)`.
 - [ ] Visual check: cars traverse straight lanes and curves with smooth orientation transitions.
@@ -324,7 +316,7 @@ Once the `TrafficSignal`, `CarMotion`, and `Crashed` contracts are fixed, tackle
 
 Target: **< 15 MB** uncompressed wasm (ideally < 10 MB). Baseline before 3D: 29.4 MB.
 
-After recording the checkpoint, tackle profile tuning, asset compression, and transfer-compression verification in parallel; compare each result against the same checkpoint build.
+After recording the checkpoint, tackle profile tuning and transfer-compression verification in parallel; compare each result against the same checkpoint build.
 
 - [ ] **3D Size Checkpoint**: build wasm after `View3dPlugin` primitive rendering is complete:
   ```bash
@@ -337,7 +329,6 @@ After recording the checkpoint, tackle profile tuning, asset compression, and tr
   lto = "fat"
   panic = "abort"
   ```
-- [ ] **Asset compression**: compress audio (OGG) and images (PNG via `oxipng`).
 - [ ] **Verify transfer compression**: confirm static server gzip / brotli compression reduces transfer footprint ~3–4× (e.g. 29 MB raw $\to$ ~7–9 MB over wire).
 
 ---
@@ -387,34 +378,24 @@ Once Phases 8–9 land, tackle the linking, toggle, simulation-independence, and
 
 ---
 
-### Phase 11: 3D Web Validation & Compatibility Pass
+### Phase 11: 3D Web Validation
 
-Tackle browser/device validation and web-runtime readiness in parallel against the same release candidate. Keep platform-specific findings isolated so one browser or device does not block the other workstream.
+Validate the release candidate in the locally available browser.
 
-#### 11.1 Browser & Device Validation
+#### 11.1 Browser Validation
 
-- [ ] **Browser compatibility**: test 3D build in Chrome, Firefox, and Safari using `env -u NO_COLOR trunk serve`. Verify zero WebGL2 shader compilation failures or buffer errors in console.
+- [ ] **Browser compatibility**: test the 3D build in Chromium using `env -u NO_COLOR trunk serve`. Verify zero WebGL2 shader compilation failures or buffer errors in console.
 - [ ] **Context & toggle stability**: verify switching views (`V` or button) occurs smoothly on web without frame drops or WebGL context losses.
 - [ ] **HUD stability**: ensure SPD text and toggle button remain visible across both view modes in web canvas.
 - [ ] **Depth test check**: verify gizmo debug lines render without depth-test clipping against clear color on web.
-- [ ] **Performance check**: measure mobile browser frame rate with high traffic density.
-
-#### 11.2 Web Runtime Readiness
-
-- [ ] **Asset bundling**: add `<link data-trunk rel="copy-dir" href="assets" />` to `index.html` once runtime assets (`.glb`, textures, audio) exist in `assets/`.
-- [ ] **Asset meta files**: if static hosting produces 404s on `.meta` requests, configure `AssetPlugin { meta_check: AssetMetaCheck::Never, ..default() }`.
-- [ ] **Audio policy**: prepare browser audio unlock screen (click-to-start / title interaction) before ambient traffic or crash audio plays.
-- [ ] **Web storage**: ensure high scores or save data use `localStorage` (`web-sys`) or `bevy_pkv` instead of native `std::fs`.
 
 ---
 
-### Phase 12: Deployment, Verification & Documentation
+### Phase 12: Release Readiness & Documentation
 
-After the native smoke passes, tackle CI deployment, itch.io release verification, and documentation updates in parallel.
+After the native smoke passes, update release documentation.
 
 - [ ] **Native smoke run**: execute `cargo run`, play in 3D, switch to debug 2D mid-traffic, confirm boxes/circles match positions, toggle back, crash, restart.
-- [ ] **CI deployment**: push to `main` and verify GitHub Pages workflow deploys live playable site.
-- [ ] **itch.io release**: upload tested release zip to itch.io and confirm 800×800 canvas iframe.
 - [ ] Update control instructions in `README.md` (WASD/arrows, `R`, `V` / button).
 - [ ] Check off Phase 1 decoupling and Phase 7 web distribution tasks in `docs/masterplan.md`.
 - [ ] Update `docs/isometric-view.md` §5 (record plain-3D + gizmo debug implementation and recorded wasm sizes).
@@ -431,19 +412,11 @@ After the native smoke passes, tackle CI deployment, itch.io release verificatio
 | **4** | **3D Main View**              | Pill player, box cars, flat roads, lights       | 3D gameplay runs with smooth curve navigation                    |
 | **5** | **Traffic Behavior**          | Queues, finite braking, rear-end crashes, light | Cars stop/go by signal and react safely unless distance is short |
 | **6** | **Gizmo Debug View & Toggle** | `ViewMode` switch between 3D & 2D gizmos        | UI button / `V` flips camera cleanly                             |
-| **7** | **Wasm Size & Compatibility** | Size pass + browser QA                          | Uncompressed wasm < 15 MB; runs in Chrome/Firefox/Safari         |
-| **8** | **Public Release**            | Live web builds                                 | GitHub Pages and itch.io live and playable in 3D                 |
+| **7** | **Wasm Size & Compatibility** | Size pass + Chromium QA                         | Uncompressed wasm < 15 MB; local web smoke passes                |
+| **8** | **Release Candidate**         | Tested web release package                      | Native and Chromium smoke checks pass; release docs are current  |
 
 ---
 
-## Stretch Goals & Future Work (Post-Release)
-
-- **Minimap**: render debug 2D view into a corner viewport while playing in 3D (requires gizmo `RenderLayers` rather than `ViewMode` run condition).
-- **Responsive canvas**: configure `fit_canvas_to_parent: true` with camera projection preserving 800×800 aspect ratio across desktop and web.
-- **Mobile touch controls**: on-screen virtual d-pad or swipe-to-hop controls.
-- **Web loading screen**: CSS progress bar or animated loading indicator in `index.html` while `.wasm` downloads.
-- **WebGPU target**: build target with `webgpu` feature falling back gracefully to WebGL2.
-- **Camera rotation & remap**: allow camera yaw changes with automatic arrow-key remapping (`docs/isometric-view.md` §3.4).
-- **Full pixel-art pipeline**: low-resolution render target (320×320), nearest-neighbor upscale, custom palette, and 3D pixel-art assets (`docs/isometric-view.md`).
+## Re-org
 
 - [ ] **Bevy best-practices review**: Audit the repository against current Bevy project best practices, with particular attention to thoughtful ECS design (clear component/resource boundaries, focused systems, explicit scheduling, event/observer use, query efficiency, change detection, and avoiding unnecessary entity/component churn); refactor confirmed issues and verify native and web behavior remains unchanged.
