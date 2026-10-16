@@ -4,9 +4,9 @@ pub mod collision;
 pub mod constants;
 pub mod player;
 pub mod road;
+pub mod spd;
 pub mod state;
 pub mod traffic;
-
 use constants::*;
 use state::AppState;
 
@@ -30,6 +30,7 @@ pub fn build_app() -> App {
     .add_plugins(player::PlayerPlugin)
     .add_plugins(traffic::TrafficPlugin)
     .add_plugins(collision::CollisionPlugin)
+    .add_plugins(spd::SpdPlugin)
     .add_systems(Startup, setup_camera);
     app
 }
@@ -126,6 +127,38 @@ mod tests {
             .add_plugins(collision::CollisionPlugin);
         app.update();
 
+        assert!(app.world().contains_resource::<ButtonInput<KeyCode>>());
+    }
+
+    #[test]
+    fn test_spd_setup_in_app() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .init_state::<AppState>()
+            .add_plugins(spd::SpdPlugin);
+        app.update();
+
+        assert!(app.world().contains_resource::<spd::Spd>());
+    }
+
+    #[test]
+    fn test_full_integrated_app_smoke() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin, AssetPlugin::default()))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_state::<AppState>()
+            .add_plugins(road::RoadPlugin)
+            .add_plugins(player::PlayerPlugin)
+            .add_plugins(traffic::TrafficPlugin)
+            .add_plugins(collision::CollisionPlugin)
+            .add_plugins(spd::SpdPlugin)
+            .add_systems(Startup, setup_camera);
+        app.update();
+
+        assert!(app.world().contains_resource::<spd::Spd>());
+        assert!(app.world().contains_resource::<road::RoadGeometry>());
+        assert!(app.world().contains_resource::<traffic::SpawnTimer>());
         assert!(app.world().contains_resource::<ButtonInput<KeyCode>>());
     }
 }

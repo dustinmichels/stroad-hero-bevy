@@ -1,9 +1,16 @@
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::constants::*;
-use crate::player::{Player, COLOR_PLAYER, COLOR_PLAYER_DEAD};
+use crate::player::{Player, COLOR_PLAYER};
+use crate::spd::Spd;
 use crate::state::AppState;
 use crate::traffic::{Car, SpawnTimer};
+
+/// Tag component for a blood splat entity on the floor
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BloodSplat;
 
 /// Event emitted when the player collides with a vehicle
 #[derive(Event, Debug, Clone, Copy, PartialEq)]
@@ -11,6 +18,111 @@ pub struct PlayerDiedEvent {
     pub player_entity: Entity,
     pub car_entity: Entity,
     pub position: Vec2,
+}
+
+/// Lightweight pseudo-random generator for procedural blood splat geometry
+#[derive(Debug, Clone)]
+pub struct SplatRng(u64);
+
+impl SplatRng {
+    pub fn new(seed: u64) -> Self {
+        Self(if seed == 0 { 0x853c49e6748fea9b } else { seed })
+    }
+
+    pub fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 32) as u32
+    }
+
+    pub fn next_range(&mut self, min: f32, max: f32) -> f32 {
+        let t = (self.next_u32() as f32) / (u32::MAX as f32);
+        min + t * (max - min)
+    }
+}
+
+/// Generates a 2D mesh for a pale blood splat: an organic "circle" with procedural randomness.
+pub fn create_blood_splat_mesh(seed: u64, base_radius: f32) -> Mesh {
+    let mut rng = SplatRng::new(seed);
+    let num_points = 24;
+    let mut positions = Vec::with_capacity(num_points + 1);
+    let mut normals = Vec::with_capacity(num_points + 1);
+    let mut uvs = Vec::with_capacity(num_points + 1);
+    let mut indices = Vec::with_capacity(num_points * 3);
+
+    // Center vertex
+    positions.push([0.0, 0.0, 0.0]);
+    normals.push([0.0, 0.0, 1.0]);
+    uvs.push([0.5, 0.5]);
+
+    // Generate random radial perturbations around the circle
+    let mut raw_offsets = Vec::with_capacity(num_points);
+    for _ in 0..num_points {
+        raw_offsets.push(rng.next_range(-0.35, 0.35));
+    }
+
+    // Smooth offsets cyclically so the shape forms an organic splat with lobes
+    let mut smoothed_offsets = Vec::with_capacity(num_points);
+    for i in 0..num_points {
+        let prev = raw_offsets[(i + num_points - 1) % num_points];
+        let curr = raw_offsets[i];
+        let next = raw_offsets[(i + 1) % num_points];
+        smoothed_offsets.push(0.25 * prev + 0.5 * curr + 0.25 * next);
+    }
+
+    let ellipse_angle = rng.next_range(0.0, std::f32::consts::TAU);
+    let ellipse_stretch = rng.next_range(0.85, 1.20);
+    let max_r = base_radius * 1.6;
+
+    for (i, &offset) in smoothed_offsets.iter().enumerate() {
+        let angle = (i as f32) * std::f32::consts::TAU / (num_points as f32);
+        let r = base_radius * (1.0 + offset);
+
+        let d_angle = angle - ellipse_angle;
+        let r_adj = r * (1.0 + (ellipse_stretch - 1.0) * d_angle.cos().powi(2));
+
+        let x = r_adj * angle.cos();
+        let y = r_adj * angle.sin();
+
+        positions.push([x, y, 0.0]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([0.5 + x / (2.0 * max_r), 0.5 + y / (2.0 * max_r)]);
+    }
+
+    for i in 0..num_points {
+        let next = (i + 1) % num_points;
+        indices.push(0);
+        indices.push(1 + i as u32);
+        indices.push(1 + next as u32);
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// Spawns a blood splat on the floor at the specified position
+pub fn spawn_blood_splat(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    position: Vec2,
+    seed: u64,
+) -> Entity {
+    let mesh = create_blood_splat_mesh(seed, PLAYER_RADIUS * 1.15);
+    let mesh_handle = meshes.add(mesh);
+    let mat_handle = materials.add(ColorMaterial::from_color(COLOR_BLOOD_SPLAT));
+
+    commands
+        .spawn((
+            Mesh2d(mesh_handle),
+            MeshMaterial2d(mat_handle),
+            Transform::from_xyz(position.x, position.y, Z_BLOOD_SPLAT),
+            BloodSplat,
+        ))
+        .id()
 }
 
 /// Tests 2D collision between a circle (center and radius) and an axis-aligned bounding box (center and half-extents).
@@ -38,23 +150,27 @@ pub fn check_circle_aabb_collision(
 /// System to detect collisions between active player and any car entity.
 ///
 /// When an overlap is detected:
-/// 1. Player is marked as not alive (`player.alive = false`).
-/// 2. Player material color changes to `COLOR_PLAYER_DEAD`.
-/// 3. A `PlayerDiedEvent` is triggered via `commands.trigger(...)`.
-/// 4. State transitions to `AppState::GameOver`.
+/// 1. SPD counter is incremented.
+/// 2. A blood splat is spawned on the floor at the collision coordinates (a pale circle with procedural randomness).
+/// 3. Player is reset back to `PLAYER_SPAWN_POS` (alive, restored to `COLOR_PLAYER`).
+/// 4. A `PlayerDiedEvent` is triggered via `commands.trigger(...)`.
 pub fn collision_detection(
     mut commands: Commands,
-    mut player_query: Query<(
-        Entity,
-        &mut Player,
-        &Transform,
-        Option<&MeshMaterial2d<ColorMaterial>>,
-    )>,
-    car_query: Query<(Entity, &Car, &Transform)>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    mut player_query: Query<
+        (
+            Entity,
+            &mut Player,
+            &mut Transform,
+            Option<&MeshMaterial2d<ColorMaterial>>,
+        ),
+        Without<Car>,
+    >,
+    car_query: Query<(Entity, &Car, &Transform), Without<Player>>,
+    mut materials: Option<ResMut<Assets<ColorMaterial>>>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
+    mut spd: Option<ResMut<Spd>>,
 ) {
-    for (player_entity, mut player, player_transform, maybe_mat) in &mut player_query {
+    for (player_entity, mut player, mut player_transform, maybe_mat) in &mut player_query {
         if !player.alive {
             continue;
         }
@@ -65,21 +181,37 @@ pub fn collision_detection(
             let car_pos = car_transform.translation.truncate();
 
             if check_circle_aabb_collision(player_pos, player.radius, car_pos, car.half_extents()) {
-                player.alive = false;
+                // 1. Increment SPD
+                let current_spd = if let Some(spd_res) = spd.as_deref_mut() {
+                    spd_res.increment();
+                    spd_res.0
+                } else {
+                    1
+                };
 
-                if let Some(mat_handle) = maybe_mat {
-                    if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-                        mat.color = COLOR_PLAYER_DEAD;
-                    }
+                // 2. Leave a blood splat on the floor
+                if let (Some(meshes_res), Some(mats_res)) = (meshes.as_deref_mut(), materials.as_deref_mut()) {
+                    let seed = (player_pos.x.to_bits() as u64)
+                        ^ ((player_pos.y.to_bits() as u64) << 16)
+                        ^ (current_spd as u64).wrapping_mul(0x9e3779b97f4a7c15);
+                    spawn_blood_splat(&mut commands, meshes_res, mats_res, player_pos, seed);
                 }
 
+                // 3. Reset player back to starting position
+                player_transform.translation = Vec3::new(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER);
+                player.alive = true;
+
+                if let Some(mut mat) = maybe_mat.and_then(|h| materials.as_deref_mut()?.get_mut(&h.0)) {
+                    mat.color = COLOR_PLAYER;
+                }
+
+                // 4. Trigger PlayerDiedEvent
                 commands.trigger(PlayerDiedEvent {
                     player_entity,
                     car_entity,
                     position: player_pos,
                 });
 
-                next_state.set(AppState::GameOver);
                 break;
             }
         }
@@ -92,8 +224,10 @@ pub fn collision_detection(
 /// 1. Player is marked alive and reset to `PLAYER_SPAWN_POS`.
 /// 2. Player material color is restored to `COLOR_PLAYER`.
 /// 3. All car entities are despawned.
-/// 4. The traffic `SpawnTimer` is reset.
-/// 5. State transitions to `AppState::InGame`.
+/// 4. All blood splats are cleared.
+/// 5. SPD counter is reset.
+/// 6. The traffic `SpawnTimer` is reset.
+/// 7. State transitions to `AppState::InGame`.
 pub fn restart_game(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -103,16 +237,18 @@ pub fn restart_game(
         Option<&MeshMaterial2d<ColorMaterial>>,
     )>,
     car_query: Query<Entity, With<Car>>,
+    splat_query: Query<Entity, With<BloodSplat>>,
     spawn_timer: Option<ResMut<SpawnTimer>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    current_state: Res<State<AppState>>,
+    mut materials: Option<ResMut<Assets<ColorMaterial>>>,
+    spd: Option<ResMut<Spd>>,
+    next_state: Option<ResMut<NextState<AppState>>>,
+    current_state: Option<Res<State<AppState>>>,
 ) {
-    let should_restart = match *current_state.get() {
-        AppState::GameOver => {
-            keyboard_input.just_pressed(KeyCode::Space) || keyboard_input.just_pressed(KeyCode::KeyR)
-        }
-        AppState::InGame => keyboard_input.just_pressed(KeyCode::KeyR),
+    let is_game_over = current_state.as_ref().is_some_and(|s| *s.get() == AppState::GameOver);
+    let should_restart = if is_game_over {
+        keyboard_input.just_pressed(KeyCode::Space) || keyboard_input.just_pressed(KeyCode::KeyR)
+    } else {
+        keyboard_input.just_pressed(KeyCode::KeyR)
     };
 
     if should_restart {
@@ -120,10 +256,8 @@ pub fn restart_game(
             player.alive = true;
             transform.translation = Vec3::new(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER);
 
-            if let Some(mat_handle) = maybe_mat {
-                if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-                    mat.color = COLOR_PLAYER;
-                }
+            if let Some(mut mat) = maybe_mat.and_then(|h| materials.as_deref_mut()?.get_mut(&h.0)) {
+                mat.color = COLOR_PLAYER;
             }
         }
 
@@ -131,12 +265,22 @@ pub fn restart_game(
             commands.entity(car_entity).despawn();
         }
 
+        for splat_entity in &splat_query {
+            commands.entity(splat_entity).despawn();
+        }
+
         if let Some(mut timer) = spawn_timer {
             *timer = SpawnTimer::default();
         }
 
-        if *current_state.get() != AppState::InGame {
-            next_state.set(AppState::InGame);
+        if let Some(mut spd_res) = spd {
+            spd_res.reset();
+        }
+
+        if let (Some(mut next), Some(curr)) = (next_state, current_state)
+            && *curr.get() != AppState::InGame
+        {
+            next.set(AppState::InGame);
         }
     }
 }
@@ -147,6 +291,7 @@ pub struct CollisionPlugin;
 impl Plugin for CollisionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Spd>()
             .add_systems(
                 Update,
                 collision_detection.run_if(in_state(AppState::InGame)),
@@ -158,6 +303,7 @@ impl Plugin for CollisionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::COLOR_PLAYER_DEAD;
     use bevy::input::ButtonInput;
     use bevy::state::app::StatesPlugin;
 
@@ -306,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collision_triggers_death_event_and_state_change() {
+    fn test_collision_spawns_splat_increments_spd_and_resets_player() {
         let mut app = setup_collision_test_app();
 
         #[derive(Resource, Default)]
@@ -341,30 +487,37 @@ mod tests {
 
         app.update();
 
-        // 1. Player marked as not alive
-        let player = app
+        // 1. SPD incremented
+        let spd = app.world().resource::<Spd>();
+        assert_eq!(spd.0, 1, "SPD must increment when player is run over");
+
+        // 2. Blood splat entity spawned on the floor at (0, 0)
+        let mut splat_query = app.world_mut().query::<(&BloodSplat, &Transform)>();
+        let (_splat, splat_trans) = splat_query.single(app.world()).unwrap();
+        assert_eq!(splat_trans.translation, Vec3::new(0.0, 0.0, Z_BLOOD_SPLAT));
+
+        // 3. Player reset to PLAYER_SPAWN_POS and alive
+        let (player, player_trans) = app
             .world_mut()
-            .query::<&Player>()
+            .query::<(&Player, &Transform)>()
             .single(app.world())
             .unwrap();
-        assert!(!player.alive);
+        assert!(player.alive, "Player must remain alive after respawn");
+        assert_eq!(
+            player_trans.translation,
+            Vec3::new(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER)
+        );
 
-        // 2. NextState set to GameOver; transitions on next update
-        let next_state = app.world().resource::<NextState<AppState>>();
-        assert!(matches!(*next_state, NextState::Pending(AppState::GameOver)));
-        app.update();
-        let state = app.world().resource::<State<AppState>>();
-        assert_eq!(*state.get(), AppState::GameOver);
-        // 3. Death event received by observer
+        // 4. Death event received by observer
         let recorded = app.world().resource::<RecordedDeaths>();
         assert_eq!(recorded.0.len(), 1);
         assert_eq!(recorded.0[0].player_entity, player_entity);
         assert_eq!(recorded.0[0].car_entity, car_entity);
         assert_eq!(recorded.0[0].position, Vec2::new(0.0, 0.0));
-        // 4. Player material changed to COLOR_PLAYER_DEAD
-        let materials = app.world().resource::<Assets<ColorMaterial>>();
-        let mat = materials.get(&mat_handle).unwrap();
-        assert_eq!(mat.color, COLOR_PLAYER_DEAD);
+
+        // 5. State remains InGame
+        let state = app.world().resource::<State<AppState>>();
+        assert_eq!(*state.get(), AppState::InGame);
     }
 
     #[test]
@@ -687,11 +840,17 @@ mod tests {
         app.update();
 
         let player = app.world().get::<Player>(player_entity).unwrap();
-        assert!(!player.alive, "Player in car path must trigger death");
-        let next_state = app.world().resource::<NextState<AppState>>();
-        assert!(matches!(*next_state, NextState::Pending(AppState::GameOver)));
+        assert!(player.alive, "Player must be reset alive at spawn");
+        let trans = app.world().get::<Transform>(player_entity).unwrap();
+        assert_eq!(
+            trans.translation,
+            Vec3::new(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER)
+        );
+        let spd = app.world().resource::<Spd>();
+        assert_eq!(spd.0, 1);
+        let splat_count = app.world_mut().query::<&BloodSplat>().iter(app.world()).count();
+        assert_eq!(splat_count, 1);
     }
-
     #[test]
     fn test_full_gameplay_death_and_clean_reset_cycle() {
         let dt = 0.1;
@@ -745,64 +904,29 @@ mod tests {
         // Update to run collision detection
         app.update();
 
-        // Player must be dead, color red, state transitioning to GameOver
-        assert!(!app.world().get::<Player>(player_entity).unwrap().alive);
-        assert_eq!(
-            app.world().resource::<Assets<ColorMaterial>>().get(&mat_handle).unwrap().color,
-            COLOR_PLAYER_DEAD
-        );
+        // Player gets run over:
+        // - Blood splat left on floor
+        let splat_count = app.world_mut().query::<&BloodSplat>().iter(app.world()).count();
+        assert_eq!(splat_count, 1, "Blood splat entity must be spawned on death");
 
-        // Update to complete state transition to GameOver
-        app.update();
-        assert_eq!(*app.world().resource::<State<AppState>>().get(), AppState::GameOver);
+        // - SPD incremented
+        assert_eq!(app.world().resource::<Spd>().0, 1, "SPD counter must increment");
 
-        // While dead in GameOver, arrow key inputs must NOT move the player
-        let pos_before_move_attempt = app.world().get::<Transform>(player_entity).unwrap().translation;
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.reset_all();
-            keys.press(KeyCode::ArrowUp);
-        }
-        for _ in 0..5 {
-            app.update();
-        }
-        assert_eq!(
-            app.world().get::<Transform>(player_entity).unwrap().translation,
-            pos_before_move_attempt,
-            "Dead player must not move"
-        );
-
-        // 3. Trigger Reset via Space
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.reset_all();
-            keys.press(KeyCode::Space);
-        }
-        app.update();
-
-        // Verify clean reset state:
-        // - Player alive
+        // - Player reset back to starting position, alive and ready to move
         let player = app.world().get::<Player>(player_entity).unwrap();
-        assert!(player.alive, "Player must be revived on reset");
-        // - Position reset to PLAYER_SPAWN_POS
+        assert!(player.alive, "Player must be alive at spawn");
         let player_trans = app.world().get::<Transform>(player_entity).unwrap();
         assert_eq!(
             player_trans.translation,
             Vec3::new(PLAYER_SPAWN_POS.x, PLAYER_SPAWN_POS.y, Z_PLAYER)
         );
-        // - Color reset to COLOR_PLAYER
         assert_eq!(
             app.world().resource::<Assets<ColorMaterial>>().get(&mat_handle).unwrap().color,
             COLOR_PLAYER
         );
-        // - All cars cleared
-        let car_count = app.world_mut().query::<&Car>().iter(app.world()).count();
-        assert_eq!(car_count, 0, "All cars must be despawned on reset");
-        // - Next state is InGame
-        app.update();
         assert_eq!(*app.world().resource::<State<AppState>>().get(), AppState::InGame);
 
-        // 4. Verify gameplay immediately resumes
+        // 3. Arrow keys immediately move player from spawn without needing any manual restart
         {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.reset_all();
@@ -811,11 +935,54 @@ mod tests {
         for _ in 0..3 {
             app.update();
         }
-
         let resumed_pos = app.world().get::<Transform>(player_entity).unwrap().translation;
         assert!(
             resumed_pos.y > PLAYER_SPAWN_POS.y,
-            "Player should move freely after reset"
+            "Player should move freely after death reset"
         );
+
+        // 4. Test manual restart via R key resets SPD and clears splats and cars
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+            keys.press(KeyCode::KeyR);
+        }
+        app.update();
+
+        assert_eq!(app.world().resource::<Spd>().0, 0, "SPD must reset on R key");
+        let remaining_splats = app.world_mut().query::<&BloodSplat>().iter(app.world()).count();
+        assert_eq!(remaining_splats, 0, "Blood splats should be cleared on reset");
+        let remaining_cars = app.world_mut().query::<&Car>().iter(app.world()).count();
+        assert_eq!(remaining_cars, 0, "Cars should be despawned on reset");
+    }
+
+    #[test]
+    fn test_blood_splat_mesh_and_randomness() {
+        let mesh1 = create_blood_splat_mesh(12345, 14.0);
+        let mesh2 = create_blood_splat_mesh(67890, 14.0);
+
+        let pos1 = mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+        let pos2 = mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+
+        assert_eq!(pos1.len(), 25); // 1 center + 24 perimeter
+        assert_eq!(pos2.len(), 25);
+
+        // Verify center vertex is (0, 0, 0)
+        assert_eq!(pos1[0], [0.0, 0.0, 0.0]);
+        assert_eq!(pos2[0], [0.0, 0.0, 0.0]);
+
+        // Verify that different seeds produce different vertex positions (randomness in shape)
+        let mut has_difference = false;
+        for i in 1..25 {
+            if (pos1[i][0] - pos2[i][0]).abs() > 0.01 || (pos1[i][1] - pos2[i][1]).abs() > 0.01 {
+                has_difference = true;
+                break;
+            }
+        }
+        assert!(has_difference, "Different seeds must produce different splat shapes");
+
+        // Verify indices
+        let indices = mesh1.indices().unwrap();
+        assert_eq!(indices.len(), 24 * 3);
     }
 }

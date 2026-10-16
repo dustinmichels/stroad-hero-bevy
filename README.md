@@ -25,7 +25,7 @@ mise run dev     # cargo run, Bevy dynamically linked (fast rebuilds)
 mise run build   # same, build only
 mise run fmt     # cargo fmt
 cargo run --release                  # optimized native build (statically linked)
-cargo build --profile wasm-release   # size-optimized web build (see docs/web-plan.md)
+trunk build --release --cargo-profile wasm-release  # web build (see docs/web-plan.md)
 ```
 
 ## Build configuration
@@ -33,19 +33,19 @@ cargo build --profile wasm-release   # size-optimized web build (see docs/web-pl
 Follows the [Bevy setup guide](https://bevy.org/learn/quick-start/getting-started/setup/),
 plus a few additions. Each choice is also commented inline.
 
-| Setting | Where | Source | Why |
-| --- | --- | --- | --- |
-| `rust = "latest"` | `mise.toml` | guide | Bevy's MSRV is the latest stable Rust. |
-| `profile.dev` `opt-level = 1` | `Cargo.toml` | guide | Debug builds of Bevy games are unplayably slow at `opt-level = 0`. |
-| `profile.dev.package."*"` `opt-level = 3` | `Cargo.toml` | guide | Deps compile once, so optimize them fully; our crate stays fast to rebuild. |
-| `profile.dev.package."*"` `debug = false` | `Cargo.toml` | addition | Drops dep debuginfo to cut rustc memory use on an 8 GB machine. Cost: no line info in Bevy frames when debugging. |
-| `profile.release` `codegen-units = 1`, `lto = "thin"` | `Cargo.toml` | guide | Slower release compiles for faster binaries. |
-| `profile.wasm-release` | `Cargo.toml` | guide | Size-optimized profile for the planned web build. |
-| `log` features `max_level_debug`, `release_max_level_warn` | `Cargo.toml` | guide | Compiles out trace logs from dependencies; release keeps only warn/error. |
-| `dynamic_linking` feature | `Cargo.toml` | addition | Short alias for `bevy/dynamic_linking` (the guide's biggest compile-time win). Kept opt-in rather than a default so release builds never ship needing the Bevy dylib. |
-| `build.jobs = 6` | `.cargo/config.toml` | addition | Caps parallel rustc on 8 GB RAM to avoid swapping. Override with `-j N` / `CARGO_BUILD_JOBS`. |
-| LLD linker (Linux, Windows) | `.cargo/config.toml` | guide | Much faster linking. macOS needs nothing: default `ld-prime` is already faster. |
-| `Cargo.lock` committed | `.gitignore` | addition | Executable crate: reproducible builds (also pins the wildcard `log` dep). |
+| Setting                                                    | Where                | Source   | Why                                                                                                                                                                   |
+| ---------------------------------------------------------- | -------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rust = "latest"`                                          | `mise.toml`          | guide    | Bevy's MSRV is the latest stable Rust.                                                                                                                                |
+| `profile.dev` `opt-level = 1`                              | `Cargo.toml`         | guide    | Debug builds of Bevy games are unplayably slow at `opt-level = 0`.                                                                                                    |
+| `profile.dev.package."*"` `opt-level = 3`                  | `Cargo.toml`         | guide    | Deps compile once, so optimize them fully; our crate stays fast to rebuild.                                                                                           |
+| `profile.dev.package."*"` `debug = false`                  | `Cargo.toml`         | addition | Drops dep debuginfo to cut rustc memory use on an 8 GB machine. Cost: no line info in Bevy frames when debugging.                                                     |
+| `profile.release` `codegen-units = 1`, `lto = "thin"`      | `Cargo.toml`         | guide    | Slower release compiles for faster binaries.                                                                                                                          |
+| `profile.wasm-release`                                     | `Cargo.toml`         | guide    | Size-optimized profile for the planned web build.                                                                                                                     |
+| `log` features `max_level_debug`, `release_max_level_warn` | `Cargo.toml`         | guide    | Compiles out trace logs from dependencies; release keeps only warn/error.                                                                                             |
+| `dynamic_linking` feature                                  | `Cargo.toml`         | addition | Short alias for `bevy/dynamic_linking` (the guide's biggest compile-time win). Kept opt-in rather than a default so release builds never ship needing the Bevy dylib. |
+| `build.jobs = 6`                                           | `.cargo/config.toml` | addition | Caps parallel rustc on 8 GB RAM to avoid swapping. Override with `-j N` / `CARGO_BUILD_JOBS`.                                                                         |
+| LLD linker (Linux, Windows)                                | `.cargo/config.toml` | guide    | Much faster linking. macOS needs nothing: default `ld-prime` is already faster.                                                                                       |
+| `Cargo.lock` committed                                     | `.gitignore`         | addition | Executable crate: reproducible builds (also pins the wildcard `log` dep).                                                                                             |
 
 Deliberately **not** used from the guide's optional fast-compile section:
 

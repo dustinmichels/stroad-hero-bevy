@@ -17,9 +17,12 @@ pub const LANE_WIDTH: f32 = ROAD_WIDTH / 2.0; // 60.0
 
 // Z-Ordering Layers
 pub const Z_ROAD: f32 = 0.0;
+pub const Z_BLOOD_SPLAT: f32 = 0.05;
 pub const Z_CAR: f32 = 1.0;
 pub const Z_PLAYER: f32 = 2.0;
 
+// Blood Splat Appearance
+pub const COLOR_BLOOD_SPLAT: Color = Color::srgba(0.80, 0.38, 0.40, 0.85);
 // Movement Speeds
 pub const PLAYER_SPEED: f32 = 180.0;
 pub const CAR_SPEED: f32 = 240.0;
@@ -56,7 +59,8 @@ mod tests {
 
     #[test]
     fn test_z_ordering() {
-        assert!(Z_ROAD < Z_CAR);
+        assert!(Z_ROAD < Z_BLOOD_SPLAT);
+        assert!(Z_BLOOD_SPLAT < Z_CAR);
         assert!(Z_CAR < Z_PLAYER);
     }
 
